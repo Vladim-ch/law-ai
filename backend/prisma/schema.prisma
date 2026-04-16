@@ -1,0 +1,34 @@
+// =============================================================================
+// Lawer — Prisma schema (каркас)
+// =============================================================================
+// На этом этапе описаны ТОЛЬКО datasource и generator с нужными расширениями
+// PostgreSQL. Модели данных (User, Conversation, Message, Document, Template,
+// Task, KnowledgeBase — см. ТЗ §5) будут добавлены отдельной задачей вместе
+// с первой миграцией.
+//
+// Валидация схемы без подключения к БД:
+//   npx prisma validate
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  // postgresqlExtensions — preview-фича, необходимая для декларативного
+  // подключения расширений ниже (vector, pg_trgm, uuid-ossp). Без неё блок
+  // `extensions = [...]` в datasource не распознаётся.
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+
+  // Расширения PostgreSQL, необходимые проекту:
+  //   * vector     — pgvector, хранение и поиск эмбеддингов для RAG (ТЗ §4.5).
+  //   * pg_trgm    — триграммный индекс для нечёткого поиска по русским текстам
+  //                  (ФИО, названия договоров, статьи НПА).
+  //   * uuid-ossp  — генерация UUID на стороне БД (uuid_generate_v4()) там,
+  //                  где удобнее задать DEFAULT в SQL, чем в приложении.
+  //                  map: "uuid-ossp" — реальное имя расширения с дефисом,
+  //                  которое Prisma-именем (uuidOssp) представить не может.
+  extensions = [vector, pg_trgm, uuidOssp(map: "uuid-ossp")]
+}
