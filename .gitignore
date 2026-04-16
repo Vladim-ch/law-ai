@@ -1,0 +1,80 @@
+# =========================================
+# Lawer — .gitignore
+# =========================================
+
+# ===== Node / npm / yarn / pnpm =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# ===== Переменные окружения =====
+# Все реальные .env исключаем; шаблон .env.example оставляем в репо
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.test
+!.env.example
+
+# ===== Артефакты сборки =====
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# ===== Тесты и coverage =====
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+.vitest-cache/
+
+# ===== Логи =====
+logs/
+*.log
+
+# ===== Локальные данные Docker-томов =====
+# (монтируются локально в dev, в репо им не место)
+.data/
+postgres-data/
+redis-data/
+minio-data/
+
+# ===== IDE / редакторы =====
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+
+# ===== Python (на случай MCP-серверов на Python) =====
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# ===== Prisma =====
+prisma/.env
+backend/prisma/migrations/dev.db
+
+# ===== Docker локальные override =====
+docker-compose.override.yml
+
+# ===== Claude Code — локальные настройки не коммитим =====
+# общие конфиги агентов (.claude/agents/, .claude/agent-memory/) — коммитим
+.claude/settings.local.json
+
+# ===== Временные файлы =====
+*.tmp
+*.swp
+*.swo
