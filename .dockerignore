@@ -1,0 +1,93 @@
+# =============================================================================
+# Lawer — .dockerignore
+# =============================================================================
+# Исключает файлы из build-контекста Docker. Уменьшает объём передаваемого
+# демону контекста, ускоряет сборку и предотвращает попадание секретов
+# и локальных артефактов в образы.
+#
+# Используется будущими Dockerfile'ами backend/ и frontend/ (код пока не
+# написан — сами Dockerfile'ы появятся позже).
+# =============================================================================
+
+# ===== Git и контроль версий =====
+.git/
+.gitignore
+.gitattributes
+
+# ===== Node.js =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+.npm/
+.yarn/
+
+# ===== Артефакты сборки =====
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# ===== Тесты, coverage, отчёты =====
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+.vitest-cache/
+
+# ===== Переменные окружения =====
+# .env содержит секреты — НЕ копируем в образ.
+# .env.example безопасен и может понадобиться, поэтому разрешаем явно.
+.env
+.env.*
+!.env.example
+
+# ===== Логи =====
+logs/
+*.log
+
+# ===== IDE и редакторы =====
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ===== Docker =====
+# Сами compose-файлы и локальные данные томов внутрь образа не нужны.
+docker-compose*.yml
+docker-compose.override.yml
+.data/
+postgres-data/
+redis-data/
+minio-data/
+
+# ===== Python (для MCP-серверов на Python, если появятся) =====
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# ===== Документация и служебные файлы =====
+# Эти файлы нужны разработчику, но не нужны в рантайм-образе.
+README.md
+TZ.md
+*.md
+!backend/README.md
+!frontend/README.md
+
+# ===== Claude Code и локальные конфиги =====
+.claude/
+
+# ===== Временные файлы =====
+*.tmp
+tmp/
+temp/

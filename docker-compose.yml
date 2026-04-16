@@ -1,0 +1,180 @@
+# =============================================================================
+# Lawer — Docker Compose для инфраструктурных сервисов (dev-окружение)
+# =============================================================================
+# Поднимает только инфраструктуру (PostgreSQL + pgvector, Redis, MinIO),
+# необходимую для локальной разработки backend и frontend.
+# Сами backend и frontend пока НЕ описаны — их код ещё не написан.
+#
+# Использование:
+#   cp .env.example .env          # сначала настроить переменные
+#   docker compose up -d          # поднять инфраструктуру
+#   docker compose --profile init up minio-init   # создать бакет MinIO
+#   docker compose ps             # проверить статус и healthcheck'и
+#   docker compose down           # остановить (данные в volumes сохраняются)
+#   docker compose down -v        # остановить и УДАЛИТЬ данные
+#
+# Современный Compose-спецификатор не требует поля `version:` — оно deprecated.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 с расширением pgvector.
+  # Используется как основная СУБД (Prisma) и как векторная база для RAG.
+  # Образ pgvector/pgvector:pg16 — официальный образ проекта pgvector,
+  # собран поверх postgres:16 с уже установленным C-расширением vector.
+  # Это избавляет от необходимости собирать собственный Dockerfile.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: lawer-postgres
+    restart: unless-stopped
+    # Переменные читаются из .env, имена согласованы с .env.example.
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Форсируем UTF-8 и русскую коллацию при initdb — важно для сортировки
+      # юридических текстов на русском языке.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+    # Пробрасываем порт только на localhost — наружу СУБД не светим.
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT}:5432"
+    volumes:
+      # Именованный volume для персистентности данных между перезапусками.
+      - postgres-data:/var/lib/postgresql/data
+      # init.sql выполняется ТОЛЬКО при первичной инициализации кластера
+      # (когда /var/lib/postgresql/data пуст). Активирует pgvector.
+      # Префикс 01- гарантирует порядок выполнения, если скриптов станет больше.
+      - ./docker/db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    # Healthcheck через pg_isready — лёгкая проверка готовности принимать
+    # соединения. Используется backend'ом через depends_on: condition.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - lawer-net
+
+  # ---------------------------------------------------------------------------
+  # Redis 7 — используется BullMQ для очередей фоновой обработки документов
+  # (парсинг PDF/DOCX, построение эмбеддингов) и как general-purpose кэш.
+  # Alpine-образ выбран ради минимального размера.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: lawer-redis
+    restart: unless-stopped
+    # --appendonly yes включает AOF-персистентность: задачи BullMQ не теряются
+    # при рестарте контейнера. Для dev этого достаточно, в проде можно
+    # рассмотреть --appendfsync everysec + RDB-снапшоты.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - lawer-net
+
+  # ---------------------------------------------------------------------------
+  # MinIO — S3-совместимое объектное хранилище для загруженных юристами
+  # документов (.docx/.pdf/.rtf/.txt, до 50 МБ, см. ТЗ §3.2).
+  # Тег RELEASE.2024-10-13T13-34-11Z зафиксирован вместо :latest ради
+  # воспроизводимости сборок (latest может ломаться при обновлениях MinIO).
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    container_name: lawer-minio
+    restart: unless-stopped
+    # server /data  — путь хранения объектов внутри контейнера.
+    # --console-address — отдельный порт для веб-консоли администрирования
+    # (S3 API и консоль в современных MinIO разведены на разные порты).
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      # 9000 — S3 API (используется backend'ом через AWS SDK / minio-js)
+      - "127.0.0.1:${MINIO_PORT}:9000"
+      # 9001 — веб-консоль (открывать в браузере: http://localhost:9001)
+      - "127.0.0.1:${MINIO_CONSOLE_PORT}:9001"
+    volumes:
+      - minio-data:/data
+    # HTTP-проба на встроенный liveness-эндпоинт MinIO.
+    # curl идёт в составе образа minio/minio.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - lawer-net
+
+  # ---------------------------------------------------------------------------
+  # minio-init — одноразовый контейнер (mc = MinIO Client), создающий бакет
+  # для документов после первого запуска MinIO. Запускается вручную через
+  # профиль init и завершает работу после выполнения:
+  #   docker compose --profile init up minio-init
+  # Повторный запуск идемпотентен: `mb --ignore-existing` не падает, если
+  # бакет уже есть.
+  # ---------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:RELEASE.2024-10-08T09-37-26Z
+    container_name: lawer-minio-init
+    profiles: ["init"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET_DOCUMENTS: ${MINIO_BUCKET_DOCUMENTS}
+    # Регистрируем alias `local`, создаём бакет (если нет) и выставляем
+    # приватную политику доступа — объекты отдаются только по подписанным URL.
+    entrypoint: >
+      /bin/sh -c "
+      set -e;
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
+      mc mb --ignore-existing local/$${MINIO_BUCKET_DOCUMENTS};
+      mc anonymous set none local/$${MINIO_BUCKET_DOCUMENTS};
+      echo 'MinIO bucket ready: '$${MINIO_BUCKET_DOCUMENTS};
+      "
+    restart: "no"
+    networks:
+      - lawer-net
+
+# =============================================================================
+# Сети
+# =============================================================================
+# Явная bridge-сеть. Её имя (lawer-net) используется вместо неявной
+# default-сети, чтобы избежать коллизий с другими проектами на той же машине
+# и облегчить диагностику (`docker network inspect lawer-net`).
+networks:
+  lawer-net:
+    name: lawer-net
+    driver: bridge
+
+# =============================================================================
+# Тома
+# =============================================================================
+# Именованные volumes живут в /var/lib/docker/volumes и не попадают
+# в рабочий каталог проекта (в отличие от bind-mount). Это:
+#   - корректнее по правам доступа (uid внутри контейнера ≠ uid хоста);
+#   - проще бэкапить (`docker run --rm -v postgres-data:/src ...`);
+#   - .gitignore уже исключает каталоги postgres-data/ redis-data/ minio-data/,
+#     но они остались бы пустыми — реальные данные лежат в docker-тома.
+volumes:
+  postgres-data:
+    name: lawer-postgres-data
+  redis-data:
+    name: lawer-redis-data
+  minio-data:
+    name: lawer-minio-data
