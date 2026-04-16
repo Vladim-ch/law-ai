@@ -28,3 +28,18 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 -- Все первичные ключи в модели данных (ТЗ §5) имеют тип UUID.
 -- Альтернатива — gen_random_uuid() из pgcrypto, тоже подходит; Prisma умеет обе.
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Жёстко фиксируем таймзону на уровне БД: NOW(), CURRENT_TIMESTAMP, конвертация
+-- timestamptz и триггеры теперь работают в Asia/Irkutsk независимо от env TZ
+-- контейнера и от настроек клиента. Для юридического ПО это критично —
+-- временные метки (сроки, дедлайны, аудит) должны быть детерминированы.
+-- ALTER DATABASE меняет параметр на уровне базы; применяется при новом
+-- подключении. Имя БД берём из current_database(), чтобы скрипт не зависел
+-- от значения POSTGRES_DB (docker-entrypoint-initdb.d подключает psql без
+-- проброса переменных окружения в psql-переменные).
+DO $$
+BEGIN
+  EXECUTE format('ALTER DATABASE %I SET timezone TO %L',
+                 current_database(), 'Asia/Irkutsk');
+END
+$$;
