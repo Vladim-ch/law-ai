@@ -1,0 +1,34 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* Тёмная тема как основная */
+  :root {
+    --color-bg: 15 15 20;
+    --color-text: 229 231 235;
+  }
+
+  body {
+    @apply bg-surface text-gray-200 antialiased;
+  }
+
+  /* Кастомный скроллбар для Webkit-браузеров */
+  ::-webkit-scrollbar {
+    @apply w-1.5;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-gray-700 hover:bg-gray-600;
+  }
+
+  /* Плавные переходы для интерактивных элементов */
+  a,
+  button {
+    @apply transition-colors duration-150;
+  }
+}
