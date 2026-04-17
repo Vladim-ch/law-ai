@@ -38,9 +38,14 @@ export async function apiFetch<T = unknown>(
   const token = getToken();
 
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
   };
+
+  // Content-Type только для запросов с телом (POST, PUT, PATCH).
+  // DELETE без тела + Content-Type: application/json вызывает 400 в Fastify.
+  if (options.body) {
+    headers['Content-Type'] = 'application/json';
+  }
 
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;

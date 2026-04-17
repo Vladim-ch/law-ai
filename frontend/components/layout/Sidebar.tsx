@@ -91,10 +91,12 @@ export function Sidebar() {
         ) : (
           <div className="space-y-0.5">
             {sortedConversations.map((conv) => (
-              <button
+              <div
                 key={conv.id}
                 onClick={() => selectConversation(conv.id)}
-                className={`group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${
+                role="button"
+                tabIndex={0}
+                className={`group flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${
                   currentConversationId === conv.id
                     ? 'bg-surface-tertiary text-gray-200'
                     : 'text-gray-400 hover:bg-surface-tertiary hover:text-gray-200'
@@ -105,15 +107,19 @@ export function Sidebar() {
                   <p className="truncate">{conv.title || 'Новый диалог'}</p>
                   <p className="text-xs text-gray-600">{formatDate(conv.updatedAt)}</p>
                 </div>
-                {/* Кнопка удаления (при hover) */}
+                {/* Кнопка удаления */}
                 <button
-                  onClick={(e) => handleDelete(e, conv.id)}
-                  className="shrink-0 rounded p-1 text-gray-600 opacity-0 transition-opacity hover:bg-red-500/10 hover:text-red-400 group-hover:opacity-100"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    deleteConversation(conv.id);
+                  }}
+                  className="shrink-0 rounded p-1.5 text-gray-600 transition-colors hover:bg-red-500/10 hover:text-red-400"
                   aria-label="Удалить диалог"
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
+                  <Trash2 className="h-4 w-4" />
                 </button>
-              </button>
+              </div>
             ))}
           </div>
         )}

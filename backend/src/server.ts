@@ -138,6 +138,7 @@ export async function buildServer(): Promise<AppInstance> {
   await app.register(cors, {
     origin: true,
     credentials: true,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
 
   // --- Плагины внешних зависимостей -------------------------------------------
