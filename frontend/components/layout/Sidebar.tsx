@@ -45,7 +45,7 @@ export function Sidebar() {
 
   /** Создать новый диалог */
   const handleNewChat = async () => {
-    clearCurrentConversation();
+    await createConversation();
   };
 
   /** Удалить диалог с подтверждением */
