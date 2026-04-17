@@ -18,6 +18,8 @@ import {
   listDocuments,
   getDocument,
   deleteDocument,
+  analyzeDocument,
+  summarizeDocument,
 } from '../services/document.js';
 
 // ---------------------------------------------------------------------------
@@ -337,6 +339,161 @@ const documentRoutes: FastifyPluginAsync = async (fastify) => {
           `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`,
         )
         .send(stream);
+    },
+  });
+  // =========================================================================
+  // POST /documents/:id/analyze — Анализ документа через LLM (SSE-стриминг)
+  // =========================================================================
+  app.route({
+    method: 'POST',
+    url: '/documents/:id/analyze',
+    schema: {
+      description: 'Анализ документа через LLM с SSE-стримингом ответа',
+      tags: ['documents'],
+      params: documentParamsSchema,
+      body: z.object({
+        prompt: z.string().max(32_000).optional(),
+      }),
+      // Без response-схемы — reply.raw обходит сериализацию Fastify
+    },
+    onRequest: [app.authenticate],
+    handler: async (request, reply) => {
+      const { userId } = request.user;
+      const { id } = request.params;
+      const { prompt: userPrompt } = request.body;
+
+      // Хелпер для отправки SSE-событий
+      const sendEvent = (data: Record<string, unknown>) => {
+        reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      try {
+        // Получаем документ с проверкой принадлежности пользователю
+        const document = await getDocument(app.prisma, id, userId);
+
+        if (!document) {
+          return reply.status(404).send({
+            error: 'NotFound',
+            message: 'Документ не найден',
+          });
+        }
+
+        // Проверяем наличие извлечённого текста
+        if (!document.contentText) {
+          return reply.status(400).send({
+            error: 'BadRequest',
+            message: 'Текст документа не извлечён',
+          });
+        }
+
+        // Получаем стрим от LLM
+        const stream = analyzeDocument({ document, userPrompt });
+
+        // Настраиваем SSE-заголовки.
+        // CORS-заголовки добавляем вручную, т.к. reply.raw обходит Fastify-плагины.
+        const origin = request.headers.origin || '*';
+        reply.raw.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+          'Access-Control-Allow-Origin': origin,
+          'Access-Control-Allow-Credentials': 'true',
+        });
+
+        // Начало анализа — отправляем ID документа
+        sendEvent({ type: 'analysis_start', documentId: document.id });
+
+        // Собираем полный текст ответа параллельно со стримингом
+        let fullContent = '';
+
+        for await (const token of stream) {
+          fullContent += token;
+          sendEvent({ type: 'token', content: token });
+        }
+
+        // Завершающее событие с полным текстом анализа
+        sendEvent({
+          type: 'analysis_end',
+          content: fullContent,
+        });
+      } catch (error) {
+        // Если заголовки ещё не отправлены — можно вернуть обычную ошибку
+        if (!reply.raw.headersSent) {
+          const statusCode =
+            (error as Error & { statusCode?: number }).statusCode ?? 500;
+          const message =
+            statusCode >= 500
+              ? 'Внутренняя ошибка сервера'
+              : (error as Error).message;
+
+          reply.raw.writeHead(statusCode, {
+            'Content-Type': 'application/json',
+          });
+          reply.raw.write(
+            JSON.stringify({
+              error: statusCode >= 500 ? 'InternalServerError' : 'Error',
+              message,
+            }),
+          );
+          reply.raw.end();
+          return reply;
+        }
+
+        // Заголовки уже отправлены — ошибку можно передать только через SSE
+        request.log.error({ err: error }, 'Ошибка во время SSE-стриминга анализа документа');
+        sendEvent({
+          type: 'error',
+          error: 'Произошла ошибка при анализе документа',
+        });
+      }
+
+      reply.raw.end();
+      return reply;
+    },
+  });
+
+  // =========================================================================
+  // POST /documents/:id/summarize — Краткое резюме документа (JSON-ответ)
+  // =========================================================================
+  app.route({
+    method: 'POST',
+    url: '/documents/:id/summarize',
+    schema: {
+      description: 'Получить краткое резюме документа (3-5 предложений)',
+      tags: ['documents'],
+      params: documentParamsSchema,
+      response: {
+        200: z.object({ summary: z.string() }),
+        400: errorResponseSchema,
+        401: errorResponseSchema,
+        404: errorResponseSchema,
+      },
+    },
+    onRequest: [app.authenticate],
+    handler: async (request, reply) => {
+      const { userId } = request.user;
+      const { id } = request.params;
+
+      const document = await getDocument(app.prisma, id, userId);
+
+      if (!document) {
+        return reply.status(404).send({
+          error: 'NotFound',
+          message: 'Документ не найден',
+        });
+      }
+
+      if (!document.contentText) {
+        return reply.status(400).send({
+          error: 'BadRequest',
+          message: 'Текст документа не извлечён',
+        });
+      }
+
+      const summary = await summarizeDocument({ document });
+
+      return reply.status(200).send({ summary });
     },
   });
 };

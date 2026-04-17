@@ -8,8 +8,12 @@
 
 import type { PrismaClient, Document } from '@prisma/client';
 import type { Client as MinioClient } from 'minio';
+import type OpenAI from 'openai';
 import mammoth from 'mammoth';
 import { PDFParse } from 'pdf-parse';
+
+import { getSystemMessage } from '../lib/system-prompt.js';
+import { streamChat, chat } from '../lib/llm.js';
 
 // ---------------------------------------------------------------------------
 // Допустимые расширения файлов
@@ -238,4 +242,88 @@ export async function deleteDocument(
   await prisma.document.delete({ where: { id: documentId } });
 
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Промпт по умолчанию для комплексного анализа документа
+// ---------------------------------------------------------------------------
+
+const DEFAULT_ANALYSIS_PROMPT = `Выполни комплексный анализ документа:
+
+1. **Краткое резюме** — о чём документ, кто стороны, предмет.
+2. **Ключевые условия** — сроки, суммы, обязательства сторон, порядок расчётов.
+3. **Потенциальные риски** — невыгодные условия, пробелы, несоответствия законодательству РФ.
+4. **Соответствие законодательству** — ссылки на применимые нормативные акты (ГК РФ, ТК РФ и т.д.).
+5. **Рекомендации** — что доработать, на что обратить внимание.`;
+
+// ---------------------------------------------------------------------------
+// Анализ документа (стриминг)
+// ---------------------------------------------------------------------------
+
+interface AnalyzeDocumentParams {
+  document: Document;
+  /** Кастомный промпт пользователя. Если не задан — используется DEFAULT_ANALYSIS_PROMPT. */
+  userPrompt?: string;
+}
+
+/**
+ * Формирует промпт для анализа документа и возвращает async-генератор
+ * с токенами ответа LLM. Вызывающий код стримит токены клиенту через SSE.
+ */
+export function analyzeDocument(
+  params: AnalyzeDocumentParams,
+): AsyncGenerator<string> {
+  const { document, userPrompt } = params;
+
+  const messages: OpenAI.ChatCompletionMessageParam[] = [
+    getSystemMessage(),
+    {
+      role: 'user',
+      content: `Проанализируй следующий юридический документ.
+
+Файл: ${document.filename} (${document.fileType})
+
+Текст документа:
+---
+${document.contentText}
+---
+
+${userPrompt || DEFAULT_ANALYSIS_PROMPT}`,
+    },
+  ];
+
+  return streamChat(messages);
+}
+
+// ---------------------------------------------------------------------------
+// Краткое резюме документа (синхронный ответ)
+// ---------------------------------------------------------------------------
+
+interface SummarizeDocumentParams {
+  document: Document;
+}
+
+/**
+ * Генерирует краткое резюме документа (3-5 предложений) через LLM.
+ * Не-стриминговый вызов — возвращает готовый текст.
+ */
+export async function summarizeDocument(
+  params: SummarizeDocumentParams,
+): Promise<string> {
+  const { document } = params;
+
+  const messages: OpenAI.ChatCompletionMessageParam[] = [
+    getSystemMessage(),
+    {
+      role: 'user',
+      content: `Составь краткое резюме документа "${document.filename}" в 3-5 предложениях.
+
+Текст документа:
+---
+${document.contentText}
+---`,
+    },
+  ];
+
+  return chat(messages);
 }
