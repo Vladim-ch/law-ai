@@ -38,9 +38,9 @@ services:
       # Форсируем UTF-8 и русскую коллацию при initdb — важно для сортировки
       # юридических текстов на русском языке.
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
-    # Пробрасываем порт только на localhost — наружу СУБД не светим.
+    # Порт доступен из локальной сети (0.0.0.0) для dev-тестирования.
     ports:
-      - "127.0.0.1:${POSTGRES_PORT}:5432"
+      - "${POSTGRES_PORT}:5432"
     volumes:
       # Именованный volume для персистентности данных между перезапусками.
       - postgres-data:/var/lib/postgresql/data
@@ -76,7 +76,7 @@ services:
       # Единая таймзона для всех сервисов — см. .env.example, секция "Общие".
       TZ: ${TZ}
     ports:
-      - "127.0.0.1:${REDIS_PORT}:6379"
+      - "${REDIS_PORT}:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -109,9 +109,9 @@ services:
       TZ: ${TZ}
     ports:
       # 9000 — S3 API (используется backend'ом через AWS SDK / minio-js)
-      - "127.0.0.1:${MINIO_PORT}:9000"
+      - "${MINIO_PORT}:9000"
       # 9001 — веб-консоль (открывать в браузере: http://localhost:9001)
-      - "127.0.0.1:${MINIO_CONSOLE_PORT}:9001"
+      - "${MINIO_CONSOLE_PORT}:9001"
     volumes:
       - minio-data:/data
     # HTTP-проба на встроенный liveness-эндпоинт MinIO.
@@ -164,9 +164,9 @@ services:
       # Логирование и лимиты.
       LOG_LEVEL: ${LOG_LEVEL}
       MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE}
-    # Порт пробрасываем только на localhost — наружу backend не светим.
+    # Порт доступен из локальной сети (0.0.0.0) для dev-тестирования.
     ports:
-      - "127.0.0.1:${BACKEND_PORT}:${BACKEND_PORT}"
+      - "${BACKEND_PORT}:${BACKEND_PORT}"
     # Backend стартует только после готовности всех зависимостей.
     depends_on:
       postgres:
@@ -211,9 +211,9 @@ services:
       # что несовместимо с Docker networking.
       HOSTNAME: "0.0.0.0"
       PORT: "3000"
-    # Порт пробрасываем только на localhost — наружу frontend не светим.
+    # Порт 3100 на хосте → 3000 внутри контейнера (3000 занят другим проектом).
     ports:
-      - "127.0.0.1:3000:3000"
+      - "3100:3000"
     # Frontend зависит от backend, но не от postgres/redis/minio напрямую —
     # это транзитивные зависимости, которые backend ожидает сам.
     depends_on:
@@ -242,7 +242,7 @@ services:
       TZ: ${TZ}
     # API на localhost — для отладки через curl.
     ports:
-      - "127.0.0.1:11434:11434"
+      - "11434:11434"
     volumes:
       # Модели сохраняются между перезапусками.
       - ollama-data:/root/.ollama
