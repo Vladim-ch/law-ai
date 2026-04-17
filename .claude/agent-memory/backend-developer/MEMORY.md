@@ -1,2 +1,3 @@
 - [DB schema initialized](project_db_schema.md) — 7 Prisma models created, init migration applied (2026-04-17)
 - [External service plugins](project_service_plugins.md) — Prisma/Redis/MinIO plugins + extended /health endpoint (2026-04-17)
+- [JWT auth implemented](project_jwt_auth.md) — JWT plugin, auth service (bcrypt), register/login/me routes (2026-04-16)

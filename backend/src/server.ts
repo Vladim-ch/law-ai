@@ -21,7 +21,9 @@ import { loggerOptions } from './lib/logger.js';
 import prismaPlugin from './plugins/prisma.js';
 import redisPlugin from './plugins/redis.js';
 import minioPlugin from './plugins/minio.js';
+import jwtPlugin from './plugins/jwt.js';
 import healthRoute from './routes/health.js';
+import authRoutes from './routes/auth.js';
 
 /**
  * Тип возвращаемого инстанса: Fastify с подключённым ZodTypeProvider.
@@ -132,10 +134,14 @@ export async function buildServer(): Promise<AppInstance> {
   await app.register(prismaPlugin);
   await app.register(redisPlugin);
   await app.register(minioPlugin);
+  await app.register(jwtPlugin);
 
   // --- Роуты -----------------------------------------------------------------
   // Health — без префикса, чтобы балансировщики могли дергать ровно /health.
   await app.register(healthRoute);
+
+  // Auth — регистрация, вход, /auth/me.
+  await app.register(authRoutes);
 
   return app;
 }
