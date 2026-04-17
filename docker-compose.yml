@@ -1,8 +1,8 @@
 # =============================================================================
 # Lawer — Docker Compose (dev-окружение)
 # =============================================================================
-# Поднимает инфраструктуру (PostgreSQL + pgvector, Redis, MinIO) и backend
-# (Fastify + Prisma). Frontend пока НЕ описан — его код ещё не написан.
+# Поднимает инфраструктуру (PostgreSQL + pgvector, Redis, MinIO), backend
+# (Fastify + Prisma) и frontend (Next.js standalone).
 #
 # Использование:
 #   cp .env.example .env          # сначала настроить переменные
@@ -180,6 +180,47 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+    networks:
+      - lawer-net
+
+  # ---------------------------------------------------------------------------
+  # Frontend — Next.js 14 + TypeScript (standalone-режим).
+  # Собирается из frontend/Dockerfile (multi-stage: deps → build → runtime).
+  # NEXT_PUBLIC_* переменные передаются через args: (build-time), а не
+  # environment: — Next.js вшивает их в JS-bundle при `next build`.
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # NEXT_PUBLIC_* переменные нужны на этапе сборки (вшиваются в JS-bundle).
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME}
+    container_name: lawer-frontend
+    restart: unless-stopped
+    environment:
+      # Единая таймзона — см. .env.example.
+      TZ: ${TZ}
+      # Next.js standalone server: hostname и порт.
+      # Без HOSTNAME=0.0.0.0 standalone слушает только на localhost,
+      # что несовместимо с Docker networking.
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
+    # Порт пробрасываем только на localhost — наружу frontend не светим.
+    ports:
+      - "127.0.0.1:3000:3000"
+    # Frontend зависит от backend, но не от postgres/redis/minio напрямую —
+    # это транзитивные зависимости, которые backend ожидает сам.
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     networks:
       - lawer-net
 

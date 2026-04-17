@@ -1,1 +1,2 @@
 - [Backend Docker setup](project_docker_backend.md) — multi-stage Dockerfile, compose service, env passing strategy
+- [Frontend Docker setup](project_docker_frontend.md) — Next.js standalone multi-stage build, NEXT_PUBLIC_* as build args, port 3000
