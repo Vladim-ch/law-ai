@@ -18,8 +18,9 @@ import {
   listDocuments,
   getDocument,
   deleteDocument,
-  analyzeDocument,
+  analyzeDocumentMapReduce,
   summarizeDocument,
+  type AnalysisEvent,
 } from '../services/document.js';
 
 // ---------------------------------------------------------------------------
@@ -159,10 +160,8 @@ const documentRoutes: FastifyPluginAsync = async (fastify) => {
           id: document.id,
           filename: document.filename,
           fileType: document.fileType,
-          // Возвращаем первые 500 символов текста или null
-          contentText: document.contentText
-            ? document.contentText.slice(0, 500)
-            : null,
+          // Полный текст — фронт использует его для контекста LLM
+          contentText: document.contentText,
           createdAt: document.createdAt,
         },
         parseError,
@@ -363,7 +362,7 @@ const documentRoutes: FastifyPluginAsync = async (fastify) => {
       const { prompt: userPrompt } = request.body;
 
       // Хелпер для отправки SSE-событий
-      const sendEvent = (data: Record<string, unknown>) => {
+      const sendEvent = (data: AnalysisEvent) => {
         reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
       };
 
@@ -386,9 +385,6 @@ const documentRoutes: FastifyPluginAsync = async (fastify) => {
           });
         }
 
-        // Получаем стрим от LLM
-        const stream = analyzeDocument({ document, userPrompt });
-
         // Настраиваем SSE-заголовки.
         // CORS-заголовки добавляем вручную, т.к. reply.raw обходит Fastify-плагины.
         const origin = request.headers.origin || '*';
@@ -401,21 +397,11 @@ const documentRoutes: FastifyPluginAsync = async (fastify) => {
           'Access-Control-Allow-Credentials': 'true',
         });
 
-        // Начало анализа — отправляем ID документа
-        sendEvent({ type: 'analysis_start', documentId: document.id });
-
-        // Собираем полный текст ответа параллельно со стримингом
-        let fullContent = '';
-
-        for await (const token of stream) {
-          fullContent += token;
-          sendEvent({ type: 'token', content: token });
-        }
-
-        // Завершающее событие с полным текстом анализа
-        sendEvent({
-          type: 'analysis_end',
-          content: fullContent,
+        // Map-Reduce анализ (автоматически выбирает стратегию по длине текста)
+        await analyzeDocumentMapReduce({
+          document,
+          userPrompt,
+          sendEvent,
         });
       } catch (error) {
         // Если заголовки ещё не отправлены — можно вернуть обычную ошибку

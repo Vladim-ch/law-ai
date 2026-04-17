@@ -7,6 +7,7 @@
 
 import type { PrismaClient, Conversation, Message } from '@prisma/client';
 import type OpenAI from 'openai';
+import type { InputJsonValue } from '@prisma/client/runtime/library';
 
 import { getSystemMessage } from '../lib/system-prompt.js';
 import { streamChat } from '../lib/llm.js';
@@ -166,6 +167,9 @@ export async function getConversationWithMessages(
   return { conversation, messages: messages as Message[] };
 }
 
+/** Лимит символов текста документа, вставляемого в LLM-контекст. */
+const DOCUMENT_CONTEXT_CHAR_LIMIT = 50_000;
+
 /**
  * Отправляет сообщение пользователя и подготавливает LLM-стрим.
  *
@@ -176,12 +180,17 @@ export async function getConversationWithMessages(
  *
  * Разделение на подготовку стрима и сохранение ответа позволяет
  * обработчику роута управлять SSE-потоком между этими шагами.
+ *
+ * @param documentId — если передан, текст документа подгружается из БД
+ *   и вставляется в контекст LLM как system-сообщение. В БД сохраняется
+ *   только пользовательский запрос (без текста документа).
  */
 export async function sendMessage(
   prisma: PrismaClient,
   conversationId: string,
   userId: string,
   content: string,
+  documentId?: string,
 ): Promise<SendMessageResult> {
   // Проверяем принадлежность диалога пользователю
   const conversation = await prisma.conversation.findFirst({
@@ -194,12 +203,42 @@ export async function sendMessage(
     throw err;
   }
 
-  // Сохраняем сообщение пользователя
+  // Если передан documentId — загружаем документ и проверяем владельца
+  let documentContext: OpenAI.ChatCompletionMessageParam | null = null;
+  let attachments: InputJsonValue | undefined;
+
+  if (documentId) {
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId, userId },
+    });
+
+    if (!doc) {
+      const err = new Error('Документ не найден');
+      (err as Error & { statusCode: number }).statusCode = 404;
+      throw err;
+    }
+
+    if (doc.contentText) {
+      documentContext = {
+        role: 'system',
+        content: `Контекст: загружен документ "${doc.filename}". Текст документа:\n---\n${doc.contentText.slice(0, DOCUMENT_CONTEXT_CHAR_LIMIT)}\n---`,
+      };
+    }
+
+    attachments = {
+      documentId: doc.id,
+      filename: doc.filename,
+      fileType: doc.fileType,
+    } as unknown as InputJsonValue;
+  }
+
+  // Сохраняем сообщение пользователя (без текста документа — только запрос)
   const userMessage = await prisma.message.create({
     data: {
       conversationId,
       role: 'USER',
       content,
+      ...(attachments ? { attachments } : {}),
     },
   });
 
@@ -210,11 +249,19 @@ export async function sendMessage(
   });
 
   // Формируем массив сообщений для LLM:
-  // системный промпт → история диалога (включая только что созданное сообщение)
+  // системный промпт → история → [контекст документа] → текущее сообщение
   const llmMessages: OpenAI.ChatCompletionMessageParam[] = [
     getSystemMessage(),
-    ...previousMessages.map(toOpenAIMessage),
+    ...previousMessages.slice(0, -1).map(toOpenAIMessage),
   ];
+
+  // Вставляем контекст документа перед текущим user-сообщением
+  if (documentContext) {
+    llmMessages.push(documentContext);
+  }
+
+  // Добавляем текущее сообщение пользователя
+  llmMessages.push(toOpenAIMessage(userMessage));
 
   // Создаём async-генератор стриминга
   const stream = streamChat(llmMessages);

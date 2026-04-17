@@ -121,28 +121,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!currentConversationId) return;
 
     let finalContent = content;
+    let uploadedDocumentId: string | undefined;
 
     // Если прикреплён файл — сначала загружаем на сервер
     if (file) {
       set({ isUploading: true });
       try {
         const { document: doc, parseError } = await docApi.upload(file);
+        uploadedDocumentId = doc.id;
 
-        // Формируем сообщение с контекстом документа
+        // В чате показываем только заголовок + запрос пользователя.
+        // Полный текст документа backend подгрузит из БД по documentId.
         const docHeader = `[Загружен документ: ${doc.filename}]`;
         const userText =
           content ||
           'Проанализируй этот документ: составь краткое резюме, выдели ключевые условия и отметь потенциальные риски.';
 
-        if (doc.contentText) {
-          const truncatedText = doc.contentText.slice(0, 10000);
-          finalContent = `${docHeader}\n\nТекст документа:\n---\n${truncatedText}\n---\n\n${userText}`;
+        if (parseError) {
+          finalContent = `${docHeader}\n(Ошибка парсинга: ${parseError})\n\n${userText}`;
         } else {
-          // Документ не удалось распарсить
-          const errorNote = parseError
-            ? `\n\n(Ошибка парсинга: ${parseError})`
-            : '';
-          finalContent = `${docHeader}${errorNote}\n\n${userText}`;
+          finalContent = `${docHeader}\n\n${userText}`;
         }
       } catch (error) {
         set({ isUploading: false });
@@ -169,8 +167,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
 
     try {
-      // 2. Отправляем запрос и читаем SSE-поток
-      const response = await convApi.sendMessage(currentConversationId, finalContent);
+      // 2. Отправляем запрос и читаем SSE-поток.
+      // Если есть documentId — backend подгрузит текст из БД сам.
+      const response = await convApi.sendMessage(currentConversationId, finalContent, uploadedDocumentId);
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
 

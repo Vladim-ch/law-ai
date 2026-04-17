@@ -132,7 +132,7 @@ export const conversations = {
    * Отправить сообщение и получить SSE-поток ответа.
    * Возвращает Response, чтобы вызывающий код мог читать ReadableStream.
    */
-  sendMessage: async (id: string, content: string): Promise<Response> => {
+  sendMessage: async (id: string, content: string, documentId?: string): Promise<Response> => {
     const token = getToken();
     const url = `${API_BASE_URL}/conversations/${id}/messages`;
 
@@ -142,7 +142,7 @@ export const conversations = {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, ...(documentId ? { documentId } : {}) }),
     });
 
     if (!response.ok) {

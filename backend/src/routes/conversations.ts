@@ -57,6 +57,8 @@ const messageResponseSchema = z.object({
 /** Тело запроса на отправку сообщения. */
 const sendMessageBodySchema = z.object({
   content: z.string().min(1, 'Сообщение не может быть пустым').max(32_000, 'Сообщение слишком длинное'),
+  /** ID документа для загрузки в контекст LLM. Текст подгружается из БД, не передаётся клиентом. */
+  documentId: z.uuid().optional(),
 });
 
 /** Ответ при ошибке. */
@@ -211,7 +213,7 @@ const conversationRoutes: FastifyPluginAsync = async (fastify) => {
     handler: async (request, reply) => {
       const { userId } = request.user;
       const { id } = request.params;
-      const { content } = request.body;
+      const { content, documentId } = request.body;
 
       // Хелпер для отправки SSE-событий
       const sendEvent = (data: Record<string, unknown>) => {
@@ -224,6 +226,7 @@ const conversationRoutes: FastifyPluginAsync = async (fastify) => {
           id,
           userId,
           content,
+          documentId,
         );
 
         // Настраиваем SSE-заголовки.
