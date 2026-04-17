@@ -18,6 +18,9 @@ import {
 } from 'fastify-type-provider-zod';
 
 import { loggerOptions } from './lib/logger.js';
+import prismaPlugin from './plugins/prisma.js';
+import redisPlugin from './plugins/redis.js';
+import minioPlugin from './plugins/minio.js';
 import healthRoute from './routes/health.js';
 
 /**
@@ -122,6 +125,13 @@ export async function buildServer(): Promise<AppInstance> {
       requestId: request.id,
     });
   });
+
+  // --- Плагины внешних зависимостей -------------------------------------------
+  // Регистрируем до роутов, чтобы декораторы (prisma, redis, minio) были
+  // доступны в обработчиках запросов.
+  await app.register(prismaPlugin);
+  await app.register(redisPlugin);
+  await app.register(minioPlugin);
 
   // --- Роуты -----------------------------------------------------------------
   // Health — без префикса, чтобы балансировщики могли дергать ровно /health.
