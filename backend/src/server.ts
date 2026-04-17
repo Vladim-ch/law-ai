@@ -18,7 +18,9 @@ import {
 } from 'fastify-type-provider-zod';
 
 import cors from '@fastify/cors';
+import multipart from '@fastify/multipart';
 
+import { env } from './config/env.js';
 import { loggerOptions } from './lib/logger.js';
 import prismaPlugin from './plugins/prisma.js';
 import redisPlugin from './plugins/redis.js';
@@ -28,6 +30,7 @@ import llmPlugin from './plugins/llm.js';
 import healthRoute from './routes/health.js';
 import authRoutes from './routes/auth.js';
 import conversationRoutes from './routes/conversations.js';
+import documentRoutes from './routes/documents.js';
 
 /**
  * Тип возвращаемого инстанса: Fastify с подключённым ZodTypeProvider.
@@ -150,6 +153,14 @@ export async function buildServer(): Promise<AppInstance> {
   await app.register(jwtPlugin);
   await app.register(llmPlugin);
 
+  // --- Multipart (обработка загрузки файлов) ---------------------------------
+  // Регистрируем до роутов, чтобы request.file() был доступен в обработчиках.
+  await app.register(multipart, {
+    limits: {
+      fileSize: env.MAX_UPLOAD_SIZE, // 50 МБ из .env
+    },
+  });
+
   // --- Роуты -----------------------------------------------------------------
   // Health — без префикса, чтобы балансировщики могли дергать ровно /health.
   await app.register(healthRoute);
@@ -159,6 +170,9 @@ export async function buildServer(): Promise<AppInstance> {
 
   // Conversations — диалоги с AI-ассистентом, SSE-стриминг.
   await app.register(conversationRoutes);
+
+  // Documents — загрузка, парсинг и хранение юридических документов.
+  await app.register(documentRoutes);
 
   return app;
 }
