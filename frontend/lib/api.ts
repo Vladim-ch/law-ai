@@ -1,7 +1,9 @@
 /**
  * HTTP-клиент для взаимодействия с backend API.
- * Пока не используется — backend ещё не имеет чат-эндпоинтов.
+ * Обёртка над fetch с авторизацией, обработкой ошибок и SSE-стримингом.
  */
+
+import type { User, Conversation, Message } from './types';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -17,28 +19,137 @@ export class ApiError extends Error {
   }
 }
 
+/** Получить токен из localStorage (только в браузере) */
+function getToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem('token');
+}
+
 /**
  * Обёртка над fetch для запросов к backend.
- * Автоматически подставляет базовый URL, Content-Type и обрабатывает ошибки.
+ * Автоматически подставляет базовый URL, Authorization и Content-Type.
+ * При 401 — разлогинивает пользователя.
  */
 export async function apiFetch<T = unknown>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
+  const token = getToken();
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string>),
+  };
+
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
 
   const response = await fetch(url, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
+    headers,
   });
 
   if (!response.ok) {
-    const body = await response.text().catch(() => undefined);
-    throw new ApiError(response.status, response.statusText, body);
+    // При 401 — очищаем токен
+    if (response.status === 401) {
+      localStorage.removeItem('token');
+    }
+
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      body = await response.text().catch(() => undefined);
+    }
+
+    const message =
+      (body && typeof body === 'object' && 'message' in body
+        ? (body as { message: string }).message
+        : response.statusText) || response.statusText;
+
+    throw new ApiError(response.status, message, body);
+  }
+
+  // Для 204 (No Content) — не парсим тело
+  if (response.status === 204) {
+    return undefined as T;
   }
 
   return response.json() as Promise<T>;
 }
+
+/** Методы авторизации */
+export const auth = {
+  /** Регистрация нового пользователя */
+  register: (email: string, name: string, password: string) =>
+    apiFetch<{ token: string; user: User }>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ email, name, password }),
+    }),
+
+  /** Вход по email и паролю */
+  login: (email: string, password: string) =>
+    apiFetch<{ token: string; user: User }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
+
+  /** Получить текущего пользователя по токену */
+  me: () => apiFetch<{ user: User }>('/auth/me'),
+};
+
+/** Методы для работы с диалогами */
+export const conversations = {
+  /** Создать новый диалог */
+  create: (title?: string) =>
+    apiFetch<{ conversation: Conversation }>('/conversations', {
+      method: 'POST',
+      body: JSON.stringify({ title }),
+    }),
+
+  /** Получить список диалогов */
+  list: (limit = 50, offset = 0) =>
+    apiFetch<{ conversations: Conversation[]; total: number }>(
+      `/conversations?limit=${limit}&offset=${offset}`,
+    ),
+
+  /** Получить один диалог с сообщениями */
+  get: (id: string) =>
+    apiFetch<{ conversation: Conversation; messages: Message[] }>(`/conversations/${id}`),
+
+  /** Удалить диалог */
+  delete: (id: string) =>
+    apiFetch<void>(`/conversations/${id}`, { method: 'DELETE' }),
+
+  /**
+   * Отправить сообщение и получить SSE-поток ответа.
+   * Возвращает Response, чтобы вызывающий код мог читать ReadableStream.
+   */
+  sendMessage: async (id: string, content: string): Promise<Response> => {
+    const token = getToken();
+    const url = `${API_BASE_URL}/conversations/${id}/messages`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ content }),
+    });
+
+    if (!response.ok) {
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        body = undefined;
+      }
+      throw new ApiError(response.status, response.statusText, body);
+    }
+
+    return response;
+  },
+};
