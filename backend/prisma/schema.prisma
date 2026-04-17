@@ -1,13 +1,18 @@
 // =============================================================================
-// Lawer — Prisma schema (каркас)
+// Lawer — Prisma schema
 // =============================================================================
-// На этом этапе описаны ТОЛЬКО datasource и generator с нужными расширениями
-// PostgreSQL. Модели данных (User, Conversation, Message, Document, Template,
-// Task, KnowledgeBase — см. ТЗ §5) будут добавлены отдельной задачей вместе
-// с первой миграцией.
+// Модель данных AI-ассистента юридического отдела (ТЗ §5).
 //
-// Валидация схемы без подключения к БД:
-//   npx prisma validate
+// Конвенции:
+//   - Модели: PascalCase (User, Conversation, ...)
+//   - Поля:   camelCase  (userId, createdAt, ...)
+//   - Таблицы БД: snake_case через @@map (users, conversations, ...)
+//   - Столбцы БД: snake_case через @map там, где отличается от camelCase
+//   - PK: UUID, генерируется на стороне БД через uuid_generate_v4()
+//   - DateTime: Timestamptz — хранение с учётом таймзоны (Asia/Irkutsk)
+//
+// Валидация без БД:  npx prisma validate
+// Миграция:          npx prisma migrate dev --name init
 // =============================================================================
 
 generator client {
@@ -31,4 +36,171 @@ datasource db {
   //                  map: "uuid-ossp" — реальное имя расширения с дефисом,
   //                  которое Prisma-именем (uuidOssp) представить не может.
   extensions = [vector, pg_trgm, uuidOssp(map: "uuid-ossp")]
+}
+
+// =============================================================================
+// Enum'ы
+// =============================================================================
+
+/// Роль пользователя в системе (ТЗ §3.1 — ролевая модель доступа)
+enum UserRole {
+  ADMIN  @map("admin")
+  LAWYER @map("lawyer")
+  VIEWER @map("viewer")
+
+  @@map("user_role")
+}
+
+/// Роль автора сообщения в диалоге (user — юрист, assistant — LLM, system — системное)
+enum MessageRole {
+  USER      @map("user")
+  ASSISTANT @map("assistant")
+  SYSTEM    @map("system")
+
+  @@map("message_role")
+}
+
+/// Статус задачи юридического отдела (ТЗ §2.5)
+enum TaskStatus {
+  PENDING     @map("pending")
+  IN_PROGRESS @map("in_progress")
+  DONE        @map("done")
+
+  @@map("task_status")
+}
+
+// =============================================================================
+// Модели (строго по ТЗ §5)
+// =============================================================================
+
+/// Пользователь системы — юрист, администратор или наблюдатель
+model User {
+  id           String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  email        String   @unique
+  name         String
+  role         UserRole @default(LAWYER)
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Связи
+  conversations Conversation[]
+  documents     Document[]
+  templates     Template[]
+  tasks         Task[]
+  knowledgeBase KnowledgeBase[]
+
+  @@map("users")
+}
+
+/// Диалог пользователя с AI-ассистентом (ТЗ §2.1 — чат-интерфейс)
+model Conversation {
+  id        String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  title     String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Связи
+  user     User      @relation(fields: [userId], references: [id])
+  messages Message[]
+
+  @@index([userId])
+  @@map("conversations")
+}
+
+/// Сообщение внутри диалога (от пользователя, ассистента или системы)
+model Message {
+  id             String      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  conversationId String      @map("conversation_id") @db.Uuid
+  role           MessageRole
+  content        String      @db.Text
+  /// Прикреплённые файлы — nullable JSONB. Используем Json? вместо строгой типизации,
+  /// поскольку структура вложений может варьироваться (файлы, ссылки, метаданные).
+  attachments    Json?
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz
+
+  // Связи
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  @@index([conversationId])
+  @@map("messages")
+}
+
+/// Загруженный документ (docx, pdf, txt, rtf) для анализа (ТЗ §2.2)
+model Document {
+  id          String @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId      String @map("user_id") @db.Uuid
+  filename    String
+  filePath    String @map("file_path")
+  fileType    String @map("file_type")
+  /// Извлечённый текст документа. Nullable — заполняется асинхронно после парсинга.
+  contentText String? @map("content_text") @db.Text
+  /// Векторное представление документа для RAG-поиска (ТЗ §4.5).
+  /// Prisma 6 не поддерживает тип vector нативно, поэтому используем Unsupported.
+  /// Размерность 1536 соответствует эмбеддингам Claude / OpenAI ada-002.
+  /// Для операций с этим полем потребуются raw-запросы ($queryRaw / $executeRaw).
+  embedding   Unsupported("vector(1536)")?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Связи
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("documents")
+}
+
+/// Шаблон юридического документа (договор, претензия и т.п.) (ТЗ §2.3)
+model Template {
+  id           String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name         String
+  category     String
+  /// Тело шаблона с плейсхолдерами вида {{placeholder}}
+  templateBody String   @map("template_body") @db.Text
+  /// Описание параметров шаблона в формате JSONB. Структура определяется
+  /// на уровне приложения (Zod-схема), а не на уровне БД.
+  parameters   Json
+  createdById  String   @map("created_by") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Связи
+  createdBy User @relation(fields: [createdById], references: [id])
+
+  @@index([createdById])
+  @@map("templates")
+}
+
+/// Задача юридического отдела с дедлайном и напоминанием (ТЗ §2.5)
+model Task {
+  id          String     @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId      String     @map("user_id") @db.Uuid
+  title       String
+  description String?    @db.Text
+  deadline    DateTime?  @db.Timestamptz
+  status      TaskStatus @default(PENDING)
+  reminderAt  DateTime?  @map("reminder_at") @db.Timestamptz
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz
+
+  // Связи
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("tasks")
+}
+
+/// Статья базы знаний компании — регламенты, FAQ, НПА (ТЗ §2.6)
+model KnowledgeBase {
+  id          String @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  title       String
+  content     String @db.Text
+  category    String
+  /// Векторное представление для семантического поиска (аналогично Document.embedding)
+  embedding   Unsupported("vector(1536)")?
+  createdById String @map("created_by") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // Связи
+  createdBy User @relation(fields: [createdById], references: [id])
+
+  @@index([createdById])
+  @@map("knowledge_base")
 }
