@@ -1,2 +1,3 @@
-- [Backend Docker setup](project_docker_backend.md) — multi-stage Dockerfile, compose service, env passing strategy
+- [Backend Docker setup](project_docker_backend.md) — multi-stage Dockerfile, compose service, LLM env vars (LLM_BASE_URL/MODEL/API_KEY)
 - [Frontend Docker setup](project_docker_frontend.md) — Next.js standalone multi-stage build, NEXT_PUBLIC_* as build args, port 3000
+- [Ollama LLM service](project_docker_ollama.md) — self-hosted LLM in compose, CPU/GPU modes, ollama-init for model pull

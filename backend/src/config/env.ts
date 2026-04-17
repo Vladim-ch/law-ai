@@ -58,11 +58,14 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(32, 'JWT_SECRET должен быть не короче 32 символов'),
   JWT_EXPIRES_IN: z.string().min(1).default('7d'),
 
-  // --- Anthropic / Claude ---
-  // На этапе каркаса ключ может отсутствовать — станет обязательным, когда
-  // появится интеграция с LLM. Пока допускаем пустую строку.
-  ANTHROPIC_API_KEY: z.string().optional().default(''),
-  ANTHROPIC_MODEL: z.string().min(1).default('claude-opus-4-6'),
+  // --- LLM (Ollama / OpenAI-совместимый API) ---
+  // Базовый URL LLM-сервера. Для Ollama: http://ollama:11434/v1
+  // Для OpenAI: https://api.openai.com/v1
+  LLM_BASE_URL: z.url(),
+  // Имя модели в формате провайдера (например, qwen2.5:7b для Ollama).
+  LLM_MODEL: z.string().min(1),
+  // API-ключ. Ollama не требует ключ, но OpenAI SDK ожидает непустое значение.
+  LLM_API_KEY: z.string().min(1).default('ollama'),
 
   // --- Логирование ---
   LOG_LEVEL: z

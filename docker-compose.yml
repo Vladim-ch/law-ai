@@ -8,6 +8,7 @@
 #   cp .env.example .env          # сначала настроить переменные
 #   docker compose up -d          # поднять инфраструктуру
 #   docker compose --profile init up minio-init   # создать бакет MinIO
+#   docker compose --profile init up ollama-init  # скачать LLM-модель
 #   docker compose ps             # проверить статус и healthcheck'и
 #   docker compose down           # остановить (данные в volumes сохраняются)
 #   docker compose down -v        # остановить и УДАЛИТЬ данные
@@ -156,9 +157,10 @@ services:
       # JWT / Аутентификация.
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN}
-      # LLM / Anthropic — допустимо пустое значение (на MVP LLM может не быть).
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL}
+      # LLM (Ollama / OpenAI-совместимый API).
+      LLM_BASE_URL: http://ollama:11434/v1
+      LLM_MODEL: ${LLM_MODEL}
+      LLM_API_KEY: ${LLM_API_KEY:-ollama}
       # Логирование и лимиты.
       LOG_LEVEL: ${LOG_LEVEL}
       MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE}
@@ -172,6 +174,8 @@ services:
       redis:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
     # Shell-form позволяет подставить $BACKEND_PORT из окружения контейнера.
     healthcheck:
@@ -221,6 +225,74 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    networks:
+      - lawer-net
+
+  # ---------------------------------------------------------------------------
+  # Ollama — self-hosted LLM-сервер с REST API, совместимым с OpenAI SDK.
+  # Образ ollama/ollama автоматически использует CPU; для GPU (NVIDIA)
+  # нужно раскомментировать блок deploy ниже.
+  # Модели хранятся в именованном volume и не скачиваются повторно.
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: lawer-ollama
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+    # API на localhost — для отладки через curl.
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      # Модели сохраняются между перезапусками.
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:11434/ || exit 1"]
+      # Ollama стартует быстро, но загрузка модели при первом запросе
+      # может занять время.
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - lawer-net
+    # --- GPU (NVIDIA) ---
+    # Раскомментировать при переезде на машину с GPU (например, RTX 4090).
+    # Требуется установленный nvidia-container-toolkit на хосте:
+    #   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+    # После раскомментирования также рекомендуется увеличить модель в .env:
+    #   LLM_MODEL=qwen2.5:14b  (или qwen2.5:32b для 24GB VRAM)
+    #
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # ---------------------------------------------------------------------------
+  # ollama-init — одноразовый контейнер, скачивающий LLM-модель при первом
+  # запуске. Запускается вручную через профиль init:
+  #   docker compose --profile init up ollama-init
+  # Повторный запуск идемпотентен: pull существующей модели — быстрый no-op.
+  # ---------------------------------------------------------------------------
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: lawer-ollama-init
+    profiles: ["init"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    # Скачиваем модель, указанную в переменной LLM_MODEL.
+    entrypoint: >
+      /bin/sh -c "
+      ollama pull ${LLM_MODEL:-qwen2.5:7b};
+      echo 'Модель ${LLM_MODEL:-qwen2.5:7b} готова';
+      "
+    restart: "no"
     networks:
       - lawer-net
 
@@ -286,3 +358,5 @@ volumes:
     name: lawer-redis-data
   minio-data:
     name: lawer-minio-data
+  ollama-data:
+    name: lawer-ollama-data
