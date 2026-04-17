@@ -17,6 +17,8 @@ import {
   type ZodTypeProvider,
 } from 'fastify-type-provider-zod';
 
+import cors from '@fastify/cors';
+
 import { loggerOptions } from './lib/logger.js';
 import prismaPlugin from './plugins/prisma.js';
 import redisPlugin from './plugins/redis.js';
@@ -128,6 +130,14 @@ export async function buildServer(): Promise<AppInstance> {
       message: `Route ${request.method} ${request.url} not found`,
       requestId: request.id,
     });
+  });
+
+  // --- CORS ------------------------------------------------------------------
+  // Разрешаем cross-origin запросы от фронтенда (другой порт = другой origin).
+  // В dev: origin: true (любой origin). В проде — ограничить конкретным доменом.
+  await app.register(cors, {
+    origin: true,
+    credentials: true,
   });
 
   // --- Плагины внешних зависимостей -------------------------------------------
