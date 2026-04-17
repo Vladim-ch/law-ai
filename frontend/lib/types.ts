@@ -22,6 +22,20 @@ export interface Message {
   createdAt: string;
 }
 
+/** Информация о документе (без содержимого) */
+export interface DocumentInfo {
+  id: string;
+  filename: string;
+  fileType: string;
+  createdAt: string;
+}
+
+/** Полный документ с текстом */
+export interface Document extends DocumentInfo {
+  filePath: string;
+  contentText: string | null;
+}
+
 /** SSE-события от сервера */
 export type SSEEvent =
   | { type: 'message_start'; messageId: string }

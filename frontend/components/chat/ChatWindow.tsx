@@ -20,6 +20,7 @@ export function ChatWindow() {
     isStreaming,
     streamingContent,
     sendMessage,
+    isUploading,
   } = useChatStore();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -59,7 +60,11 @@ export function ChatWindow() {
       </div>
 
       {/* Поле ввода */}
-      <MessageInput onSend={sendMessage} disabled={isStreaming} />
+      <MessageInput
+        onSend={sendMessage}
+        disabled={isStreaming}
+        isUploading={isUploading}
+      />
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import { create } from 'zustand';
 
-import { conversations as convApi } from '@/lib/api';
+import { conversations as convApi, documents as docApi } from '@/lib/api';
 import type { Conversation, Message, SSEEvent } from '@/lib/types';
 
 /** Состояние чата */
@@ -14,6 +14,8 @@ interface ChatState {
   /** Текущий стримящийся фрагмент ответа ассистента */
   streamingContent: string;
   isLoadingConversations: boolean;
+  /** Файл загружается на сервер */
+  isUploading: boolean;
 
   /** Загрузить список диалогов */
   loadConversations: () => Promise<void>;
@@ -27,8 +29,8 @@ interface ChatState {
   /** Удалить диалог */
   deleteConversation: (id: string) => Promise<void>;
 
-  /** Отправить сообщение с SSE-стримингом ответа */
-  sendMessage: (content: string) => Promise<void>;
+  /** Отправить сообщение с SSE-стримингом ответа. Опционально — прикреплённый файл */
+  sendMessage: (content: string, file?: File) => Promise<void>;
 
   /** Сбросить выбранный диалог */
   clearCurrentConversation: () => void;
@@ -64,6 +66,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isStreaming: false,
   streamingContent: '',
   isLoadingConversations: false,
+  isUploading: false,
 
   loadConversations: async () => {
     set({ isLoadingConversations: true });
@@ -113,15 +116,50 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ currentConversationId: null, messages: [] });
   },
 
-  sendMessage: async (content) => {
+  sendMessage: async (content, file) => {
     const { currentConversationId } = get();
     if (!currentConversationId) return;
+
+    let finalContent = content;
+
+    // Если прикреплён файл — сначала загружаем на сервер
+    if (file) {
+      set({ isUploading: true });
+      try {
+        const { document: doc, parseError } = await docApi.upload(file);
+
+        // Формируем сообщение с контекстом документа
+        const docHeader = `[Загружен документ: ${doc.filename}]`;
+        const userText =
+          content ||
+          'Проанализируй этот документ: составь краткое резюме, выдели ключевые условия и отметь потенциальные риски.';
+
+        if (doc.contentText) {
+          const truncatedText = doc.contentText.slice(0, 10000);
+          finalContent = `${docHeader}\n\nТекст документа:\n---\n${truncatedText}\n---\n\n${userText}`;
+        } else {
+          // Документ не удалось распарсить
+          const errorNote = parseError
+            ? `\n\n(Ошибка парсинга: ${parseError})`
+            : '';
+          finalContent = `${docHeader}${errorNote}\n\n${userText}`;
+        }
+      } catch (error) {
+        set({ isUploading: false });
+        console.error('Ошибка загрузки документа:', error);
+        return;
+      }
+      set({ isUploading: false });
+    }
+
+    // Если нет ни текста, ни файла — выходим
+    if (!finalContent.trim()) return;
 
     // 1. Оптимистично добавляем сообщение пользователя
     const userMessage: Message = {
       id: `temp-${Date.now()}`,
       role: 'USER',
-      content,
+      content: finalContent,
       createdAt: new Date().toISOString(),
     };
     set((state) => ({
@@ -132,7 +170,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     try {
       // 2. Отправляем запрос и читаем SSE-поток
-      const response = await convApi.sendMessage(currentConversationId, content);
+      const response = await convApi.sendMessage(currentConversationId, finalContent);
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
 
