@@ -247,7 +247,7 @@ services:
       # Модели сохраняются между перезапусками.
       - ollama-data:/root/.ollama
     healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:11434/ || exit 1"]
+      test: ["CMD", "ollama", "list"]
       # Ollama стартует быстро, но загрузка модели при первом запросе
       # может занять время.
       interval: 15s
