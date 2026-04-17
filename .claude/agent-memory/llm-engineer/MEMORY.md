@@ -1,0 +1,2 @@
+- [LLM Integration Architecture](project_llm_integration.md) — OpenAI SDK + Ollama wiring: lib/llm.ts, system-prompt.ts, plugins/llm.ts
+- [User Profile](user_profile.md) — Russian legal AI assistant builder, TypeScript/Fastify/Docker stack
