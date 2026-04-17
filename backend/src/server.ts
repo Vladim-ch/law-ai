@@ -25,6 +25,7 @@ import jwtPlugin from './plugins/jwt.js';
 import llmPlugin from './plugins/llm.js';
 import healthRoute from './routes/health.js';
 import authRoutes from './routes/auth.js';
+import conversationRoutes from './routes/conversations.js';
 
 /**
  * Тип возвращаемого инстанса: Fastify с подключённым ZodTypeProvider.
@@ -144,6 +145,9 @@ export async function buildServer(): Promise<AppInstance> {
 
   // Auth — регистрация, вход, /auth/me.
   await app.register(authRoutes);
+
+  // Conversations — диалоги с AI-ассистентом, SSE-стриминг.
+  await app.register(conversationRoutes);
 
   return app;
 }
