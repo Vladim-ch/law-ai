@@ -1,9 +1,8 @@
 # =============================================================================
-# Lawer — Docker Compose для инфраструктурных сервисов (dev-окружение)
+# Lawer — Docker Compose (dev-окружение)
 # =============================================================================
-# Поднимает только инфраструктуру (PostgreSQL + pgvector, Redis, MinIO),
-# необходимую для локальной разработки backend и frontend.
-# Сами backend и frontend пока НЕ описаны — их код ещё не написан.
+# Поднимает инфраструктуру (PostgreSQL + pgvector, Redis, MinIO) и backend
+# (Fastify + Prisma). Frontend пока НЕ описан — его код ещё не написан.
 #
 # Использование:
 #   cp .env.example .env          # сначала настроить переменные
@@ -122,6 +121,65 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    networks:
+      - lawer-net
+
+  # ---------------------------------------------------------------------------
+  # Backend — Fastify 5 + TypeScript + Prisma.
+  # Собирается из backend/Dockerfile (multi-stage: deps → build → runtime).
+  # Переменные окружения передаются через environment:, а не через --env-file.
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lawer-backend
+    restart: unless-stopped
+    environment:
+      # Единая таймзона — см. .env.example.
+      TZ: ${TZ}
+      NODE_ENV: ${NODE_ENV}
+      BACKEND_PORT: ${BACKEND_PORT}
+      # Внутри контейнера слушаем на всех интерфейсах, независимо от .env.
+      BACKEND_HOST: "0.0.0.0"
+      # База данных (Prisma).
+      DATABASE_URL: ${DATABASE_URL}
+      # Redis (BullMQ очереди + кэш).
+      REDIS_URL: ${REDIS_URL}
+      # MinIO (S3-совместимое хранилище документов).
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_PORT: ${MINIO_PORT}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET_DOCUMENTS: ${MINIO_BUCKET_DOCUMENTS}
+      MINIO_USE_SSL: ${MINIO_USE_SSL}
+      # JWT / Аутентификация.
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN}
+      # LLM / Anthropic — допустимо пустое значение (на MVP LLM может не быть).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL}
+      # Логирование и лимиты.
+      LOG_LEVEL: ${LOG_LEVEL}
+      MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE}
+    # Порт пробрасываем только на localhost — наружу backend не светим.
+    ports:
+      - "127.0.0.1:${BACKEND_PORT}:${BACKEND_PORT}"
+    # Backend стартует только после готовности всех зависимостей.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    # Shell-form позволяет подставить $BACKEND_PORT из окружения контейнера.
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:$${BACKEND_PORT}/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     networks:
       - lawer-net
 
