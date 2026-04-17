@@ -2,8 +2,8 @@
 # Lawer Backend — multi-stage Dockerfile
 # =============================================================================
 # Три стадии: deps (зависимости) → build (компиляция) → runtime (чистый образ).
-# Prisma-клиент генерируется на стадии build и копируется в runtime —
-# prisma CLI в продакшен-образе не нужен, что экономит ~30 МБ.
+# Prisma-клиент генерируется на стадии build и копируется в runtime.
+# Prisma CLI включён в runtime для автоматического применения миграций при старте.
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -31,7 +31,8 @@ RUN npm ci --ignore-scripts
 FROM deps AS build
 
 # Prisma generate требует schema.prisma для создания типизированного клиента.
-COPY prisma/schema.prisma prisma/schema.prisma
+# Миграции копируются для автоматического применения через migrate deploy при старте.
+COPY prisma/ prisma/
 RUN npx prisma generate
 
 # Копируем исходники и конфиг TypeScript.
@@ -63,8 +64,11 @@ COPY --from=build /app/prisma/ prisma/
 COPY --from=build /app/package.json package.json
 
 # Копируем сгенерированный Prisma-клиент из build-стадии.
-# Это позволяет не тянуть prisma CLI (~30 МБ) в runtime-образ.
 COPY --from=build /app/node_modules/.prisma/ node_modules/.prisma/
+
+# Entrypoint-скрипт: применяет Prisma-миграции перед запуском приложения.
+COPY docker-entrypoint.sh ./
+RUN chmod +x docker-entrypoint.sh
 
 ENV NODE_ENV=production
 
@@ -81,4 +85,5 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=5 --start-period=15s \
 
 # Переменные окружения передаются через docker-compose environment: —
 # флаг --env-file НЕ используется, т.к. .env внутри контейнера не существует.
-CMD ["node", "dist/index.js"]
+# Entrypoint применяет Prisma-миграции (migrate deploy), затем запускает сервер.
+ENTRYPOINT ["./docker-entrypoint.sh"]
