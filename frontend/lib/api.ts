@@ -3,7 +3,7 @@
  * Обёртка над fetch с авторизацией, обработкой ошибок и SSE-стримингом.
  */
 
-import type { User, Conversation, Message, Document, DocumentInfo, TemplateInfo, Template, LawInfo, LawSearchResult } from './types';
+import type { User, Conversation, Message, Document, DocumentInfo, TemplateInfo, Template, LawInfo, LawSearchResult, CompareResult } from './types';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -228,6 +228,13 @@ export const documents = {
 
   /** URL для скачивания документа */
   downloadUrl: (id: string) => `${API_BASE_URL}/documents/${id}/download`,
+
+  /** Сравнить два документа */
+  compare: (documentIdA: string, documentIdB: string) =>
+    apiFetch<{ result: CompareResult }>('/documents/compare', {
+      method: 'POST',
+      body: JSON.stringify({ documentIdA, documentIdB }),
+    }),
 };
 
 /** Методы для работы с шаблонами документов */

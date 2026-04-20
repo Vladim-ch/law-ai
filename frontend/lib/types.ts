@@ -75,6 +75,49 @@ export interface LawSearchResult {
   similarity: number;
 }
 
+/** Элемент inline diff (равный, добавленный, удалённый текст) */
+export interface InlineDiff {
+  type: 'equal' | 'added' | 'removed';
+  text: string;
+}
+
+/** Совпавший абзац */
+export interface MatchedParagraph {
+  indexA: number;
+  indexB: number;
+  text: string;
+  moved: boolean;
+}
+
+/** Изменённый абзац с inline diff */
+export interface ModifiedParagraph {
+  indexA: number;
+  indexB: number;
+  textA: string;
+  textB: string;
+  similarity: number;
+  inlineDiff: InlineDiff[];
+}
+
+/** Статистика сравнения */
+export interface CompareStats {
+  total: number;
+  matched: number;
+  modified: number;
+  added: number;
+  removed: number;
+}
+
+/** Результат сравнения двух документов */
+export interface CompareResult {
+  matched: MatchedParagraph[];
+  modified: ModifiedParagraph[];
+  addedInB: string[];
+  removedFromA: string[];
+  movedCount: number;
+  stats: CompareStats;
+}
+
 /** SSE-события от сервера */
 export type SSEEvent =
   | { type: 'message_start'; messageId: string }
