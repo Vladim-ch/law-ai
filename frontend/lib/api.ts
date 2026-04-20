@@ -3,7 +3,7 @@
  * Обёртка над fetch с авторизацией, обработкой ошибок и SSE-стримингом.
  */
 
-import type { User, Conversation, Message, Document, DocumentInfo, TemplateInfo, Template } from './types';
+import type { User, Conversation, Message, Document, DocumentInfo, TemplateInfo, Template, LawInfo, LawSearchResult } from './types';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -268,5 +268,69 @@ export const templates = {
     });
     if (!response.ok) throw new ApiError(response.status, response.statusText);
     return response.blob();
+  },
+};
+
+/** Методы для работы с нормативными актами */
+export const laws = {
+  /** Получить список загруженных актов */
+  list: () => apiFetch<{ laws: LawInfo[] }>('/laws'),
+
+  /** Поиск по нормативной базе */
+  search: (query: string, limit = 5) =>
+    apiFetch<{ results: LawSearchResult[] }>(
+      `/laws/search?query=${encodeURIComponent(query)}&limit=${limit}`,
+    ),
+
+  /** Импорт акта из JSON */
+  importJson: (data: { name: string; fullName: string; category: string; content: string }) =>
+    apiFetch<{ law: LawInfo; chunksCount: number }>('/laws/import', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  /** Импорт акта из файла (multipart/form-data) */
+  importFile: async (
+    file: File,
+    name: string,
+    fullName: string,
+    category: string,
+  ): Promise<{ law: LawInfo; chunksCount: number }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('name', name);
+    formData.append('fullName', fullName);
+    formData.append('category', category);
+
+    const token = getToken();
+    const response = await fetch(`${API_BASE_URL}/laws/import/file`, {
+      method: 'POST',
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token');
+      }
+
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        body = await response.text().catch(() => undefined);
+      }
+
+      const message =
+        (body && typeof body === 'object' && 'message' in body
+          ? (body as { message: string }).message
+          : response.statusText) || response.statusText;
+
+      throw new ApiError(response.status, message, body);
+    }
+
+    return response.json();
   },
 };

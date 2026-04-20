@@ -1,6 +1,6 @@
 'use client';
 
-import { Scale, Plus, LogOut, Trash2, MessageSquare, FileText } from 'lucide-react';
+import { Scale, Plus, LogOut, Trash2, MessageSquare, FileText, BookOpen } from 'lucide-react';
 
 import { Button } from '@/components/ui/Button';
 import { useAuthStore } from '@/stores/auth';
@@ -95,6 +95,17 @@ export function Sidebar() {
           >
             <FileText className="h-3.5 w-3.5" />
             Шаблоны
+          </button>
+          <button
+            onClick={() => setActiveSection('laws')}
+            className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
+              activeSection === 'laws'
+                ? 'bg-surface-elevated text-gray-200'
+                : 'text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            <BookOpen className="h-3.5 w-3.5" />
+            НПА
           </button>
         </div>
       </div>

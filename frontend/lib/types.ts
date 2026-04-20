@@ -59,6 +59,22 @@ export interface Template extends TemplateInfo {
   templateBody: string;
 }
 
+/** Информация о нормативном акте */
+export interface LawInfo {
+  id: string;
+  name: string;
+  fullName: string;
+  category: string;
+  chunksCount: number;
+}
+
+/** Результат поиска по нормативной базе */
+export interface LawSearchResult {
+  content: string;
+  metadata: Record<string, unknown>;
+  similarity: number;
+}
+
 /** SSE-события от сервера */
 export type SSEEvent =
   | { type: 'message_start'; messageId: string }

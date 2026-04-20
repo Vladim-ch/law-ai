@@ -155,13 +155,8 @@ const lawRoutes: FastifyPluginAsync = async (fastify) => {
     },
     onRequest: [app.authenticate],
     handler: async (request, reply) => {
-      // Проверка роли — только ADMIN может импортировать законы
-      if (request.user.role !== 'ADMIN') {
-        return reply.status(403).send({
-          error: 'Forbidden',
-          message: 'Импорт нормативных актов доступен только администраторам',
-        });
-      }
+      // TODO: Фаза 4 — ограничить импорт ролью ADMIN.
+      // Пока доступно всем авторизованным (юристы загружают сами).
 
       const { name, fullName, category, content } = request.body;
 
@@ -202,12 +197,7 @@ const lawRoutes: FastifyPluginAsync = async (fastify) => {
     },
     onRequest: [app.authenticate],
     handler: async (request, reply) => {
-      if (request.user.role !== 'ADMIN') {
-        return reply.status(403).send({
-          error: 'Forbidden',
-          message: 'Импорт нормативных актов доступен только администраторам',
-        });
-      }
+      // TODO: Фаза 4 — ограничить импорт ролью ADMIN.
 
       // Читаем multipart: файл + поля name, fullName, category
       const data = await request.file();

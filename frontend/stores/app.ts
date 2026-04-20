@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 /** Секции приложения */
-type ActiveSection = 'chat' | 'templates';
+type ActiveSection = 'chat' | 'templates' | 'laws';
 
 /** Глобальное состояние приложения */
 interface AppState {
