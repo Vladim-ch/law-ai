@@ -31,6 +31,7 @@ import healthRoute from './routes/health.js';
 import authRoutes from './routes/auth.js';
 import conversationRoutes from './routes/conversations.js';
 import documentRoutes from './routes/documents.js';
+import templateRoutes from './routes/templates.js';
 
 /**
  * Тип возвращаемого инстанса: Fastify с подключённым ZodTypeProvider.
@@ -173,6 +174,9 @@ export async function buildServer(): Promise<AppInstance> {
 
   // Documents — загрузка, парсинг и хранение юридических документов.
   await app.register(documentRoutes);
+
+  // Templates — шаблоны юридических документов, генерация .docx, LLM-доработка.
+  await app.register(templateRoutes);
 
   return app;
 }
