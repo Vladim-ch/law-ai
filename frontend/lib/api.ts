@@ -3,7 +3,7 @@
  * Обёртка над fetch с авторизацией, обработкой ошибок и SSE-стримингом.
  */
 
-import type { User, Conversation, Message, Document, DocumentInfo } from './types';
+import type { User, Conversation, Message, Document, DocumentInfo, TemplateInfo, Template } from './types';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -228,4 +228,45 @@ export const documents = {
 
   /** URL для скачивания документа */
   downloadUrl: (id: string) => `${API_BASE_URL}/documents/${id}/download`,
+};
+
+/** Методы для работы с шаблонами документов */
+export const templates = {
+  /** Получить список шаблонов с фильтрацией по категории */
+  list: (category?: string, limit = 50, offset = 0) =>
+    apiFetch<{ templates: TemplateInfo[]; total: number }>(
+      `/templates?${new URLSearchParams({
+        ...(category ? { category } : {}),
+        limit: String(limit),
+        offset: String(offset),
+      })}`,
+    ),
+
+  /** Получить шаблон по id (с телом документа) */
+  get: (id: string) => apiFetch<{ template: Template }>(`/templates/${id}`),
+
+  /** Сгенерировать заполненный текст из шаблона */
+  generate: (id: string, params: Record<string, string>) =>
+    apiFetch<{ filledText: string; missingParams: string[] }>(`/templates/${id}/generate`, {
+      method: 'POST',
+      body: JSON.stringify({ params }),
+    }),
+
+  /** URL для генерации .docx (используется в downloadDocx) */
+  generateDocxUrl: (id: string) => `${API_BASE_URL}/templates/${id}/generate/docx`,
+
+  /** Скачать заполненный шаблон как .docx (возвращает Blob) */
+  downloadDocx: async (id: string, params: Record<string, string>): Promise<Blob> => {
+    const token = getToken();
+    const response = await fetch(`${API_BASE_URL}/templates/${id}/generate/docx`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ params }),
+    });
+    if (!response.ok) throw new ApiError(response.status, response.statusText);
+    return response.blob();
+  },
 };

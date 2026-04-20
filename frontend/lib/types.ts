@@ -36,6 +36,29 @@ export interface Document extends DocumentInfo {
   contentText: string | null;
 }
 
+/** Параметр шаблона документа */
+export interface TemplateParam {
+  key: string;
+  label: string;
+  type: 'string' | 'date' | 'text';
+  required: boolean;
+  default?: string;
+}
+
+/** Краткая информация о шаблоне (без тела) */
+export interface TemplateInfo {
+  id: string;
+  name: string;
+  category: string;
+  parameters: TemplateParam[];
+  createdAt: string;
+}
+
+/** Полный шаблон с телом документа */
+export interface Template extends TemplateInfo {
+  templateBody: string;
+}
+
 /** SSE-события от сервера */
 export type SSEEvent =
   | { type: 'message_start'; messageId: string }
