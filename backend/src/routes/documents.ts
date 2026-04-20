@@ -22,6 +22,10 @@ import {
   summarizeDocument,
   type AnalysisEvent,
 } from '../services/document.js';
+import {
+  compareDocuments,
+  analyzeComparison,
+} from '../services/compare.js';
 
 // ---------------------------------------------------------------------------
 // Zod-схемы
@@ -43,6 +47,66 @@ const errorResponseSchema = z.object({
   error: z.string(),
   message: z.string(),
   requestId: z.string().optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Zod-схемы: сравнение документов
+// ---------------------------------------------------------------------------
+
+/** Тело запроса на сравнение двух документов. */
+const compareBodySchema = z.object({
+  documentIdA: z.uuid('Некорректный формат UUID документа A'),
+  documentIdB: z.uuid('Некорректный формат UUID документа B'),
+});
+
+/** Тело запроса на LLM-анализ сравнения. */
+const compareAnalyzeBodySchema = z.object({
+  documentIdA: z.uuid('Некорректный формат UUID документа A'),
+  documentIdB: z.uuid('Некорректный формат UUID документа B'),
+  prompt: z.string().max(32_000).optional(),
+});
+
+/** Элемент пословного diff. */
+const inlineDiffSchema = z.object({
+  type: z.enum(['equal', 'added', 'removed']),
+  text: z.string(),
+});
+
+/** Совпавший абзац. */
+const matchedParagraphSchema = z.object({
+  indexA: z.number(),
+  indexB: z.number(),
+  text: z.string(),
+  moved: z.boolean(),
+});
+
+/** Изменённый абзац. */
+const modifiedParagraphSchema = z.object({
+  indexA: z.number(),
+  indexB: z.number(),
+  textA: z.string(),
+  textB: z.string(),
+  similarity: z.number(),
+  inlineDiff: z.array(inlineDiffSchema),
+});
+
+/** Статистика сравнения. */
+const compareStatsSchema = z.object({
+  total: z.number(),
+  matched: z.number(),
+  modified: z.number(),
+  added: z.number(),
+  removed: z.number(),
+});
+
+/** Полный результат сравнения. */
+const compareResultSchema = z.object({
+  matched: z.array(matchedParagraphSchema),
+  modified: z.array(modifiedParagraphSchema),
+  addedInB: z.array(z.string()),
+  removedFromA: z.array(z.string()),
+  movedCount: z.number(),
+  stats: compareStatsSchema,
 });
 
 /** Краткое представление документа в списке. */
@@ -480,6 +544,147 @@ const documentRoutes: FastifyPluginAsync = async (fastify) => {
       const summary = await summarizeDocument({ document });
 
       return reply.status(200).send({ summary });
+    },
+  });
+
+  // =========================================================================
+  // POST /documents/compare — Структурный diff двух документов
+  // =========================================================================
+  app.route({
+    method: 'POST',
+    url: '/documents/compare',
+    schema: {
+      description: 'Семантическое сравнение двух документов (структурный diff)',
+      tags: ['documents'],
+      body: compareBodySchema,
+      response: {
+        200: z.object({ result: compareResultSchema }),
+        400: errorResponseSchema,
+        401: errorResponseSchema,
+        404: errorResponseSchema,
+      },
+    },
+    onRequest: [app.authenticate],
+    handler: async (request, reply) => {
+      const { userId } = request.user;
+      const { documentIdA, documentIdB } = request.body;
+
+      try {
+        const result = await compareDocuments(
+          app.prisma,
+          documentIdA,
+          documentIdB,
+          userId,
+        );
+
+        return reply.status(200).send({ result });
+      } catch (error) {
+        const rawCode =
+          (error as Error & { statusCode?: number }).statusCode ?? 500;
+
+        if (rawCode === 404) {
+          return reply.status(404).send({
+            error: 'NotFound',
+            message: (error as Error).message,
+          });
+        }
+
+        return reply.status(400).send({
+          error: 'BadRequest',
+          message: rawCode >= 500 ? 'Внутренняя ошибка сервера' : (error as Error).message,
+        });
+      }
+    },
+  });
+
+  // =========================================================================
+  // POST /documents/compare/analyze — LLM-анализ отличий (SSE)
+  // =========================================================================
+  app.route({
+    method: 'POST',
+    url: '/documents/compare/analyze',
+    schema: {
+      description: 'LLM-анализ отличий двух документов с SSE-стримингом ответа',
+      tags: ['documents'],
+      body: compareAnalyzeBodySchema,
+      // Без response-схемы — reply.raw обходит сериализацию Fastify
+    },
+    onRequest: [app.authenticate],
+    handler: async (request, reply) => {
+      const { userId } = request.user;
+      const { documentIdA, documentIdB, prompt } = request.body;
+
+      // Хелпер для отправки SSE-событий
+      const sendEvent = (data: Record<string, unknown>) => {
+        reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      try {
+        // Настраиваем SSE-заголовки.
+        // CORS-заголовки добавляем вручную, т.к. reply.raw обходит Fastify-плагины.
+        const origin = request.headers.origin || '*';
+        reply.raw.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+          'Access-Control-Allow-Origin': origin,
+          'Access-Control-Allow-Credentials': 'true',
+        });
+
+        // Стримим LLM-анализ
+        const stream = analyzeComparison(
+          app.prisma,
+          documentIdA,
+          documentIdB,
+          userId,
+          prompt,
+        );
+
+        let fullContent = '';
+
+        for await (const token of stream) {
+          fullContent += token;
+          sendEvent({ type: 'token', content: token });
+        }
+
+        sendEvent({ type: 'message_end', content: fullContent });
+      } catch (error) {
+        // Если заголовки ещё не отправлены — можно вернуть обычную ошибку
+        if (!reply.raw.headersSent) {
+          const statusCode =
+            (error as Error & { statusCode?: number }).statusCode ?? 500;
+          const message =
+            statusCode >= 500
+              ? 'Внутренняя ошибка сервера'
+              : (error as Error).message;
+
+          reply.raw.writeHead(statusCode, {
+            'Content-Type': 'application/json',
+          });
+          reply.raw.write(
+            JSON.stringify({
+              error: statusCode >= 500 ? 'InternalServerError' : 'Error',
+              message,
+            }),
+          );
+          reply.raw.end();
+          return reply;
+        }
+
+        // Заголовки уже отправлены — ошибку можно передать только через SSE
+        request.log.error(
+          { err: error },
+          'Ошибка во время SSE-стриминга анализа сравнения',
+        );
+        sendEvent({
+          type: 'error',
+          error: 'Произошла ошибка при анализе сравнения документов',
+        });
+      }
+
+      reply.raw.end();
+      return reply;
     },
   });
 };
