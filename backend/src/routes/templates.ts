@@ -28,8 +28,12 @@ import {
   mergeWithDefaults,
   generateDocx,
   generateWithLLM,
+  extractTemplateFromDocument,
+  extractTemplateFromFile,
   type TemplateParameter,
 } from '../services/template.js';
+import { chat } from '../lib/llm.js';
+import { isAllowedFileType, ALLOWED_FILE_TYPES } from '../services/document.js';
 
 // ---------------------------------------------------------------------------
 // Zod-схемы
@@ -387,6 +391,164 @@ const templateRoutes: FastifyPluginAsync = async (fastify) => {
 
       reply.raw.end();
       return reply;
+    },
+  });
+
+  // =========================================================================
+  // POST /templates/from-document — Извлечь шаблон из загруженного документа
+  // =========================================================================
+  app.route({
+    method: 'POST',
+    url: '/templates/from-document',
+    schema: {
+      description: 'Извлечь шаблон из загруженного документа через LLM (не сохраняет)',
+      tags: ['templates'],
+      body: z.object({
+        documentId: z.uuid('Некорректный формат UUID'),
+      }),
+      response: {
+        200: z.object({
+          parameters: z.array(z.object({
+            key: z.string(),
+            label: z.string(),
+            type: z.enum(['string', 'date', 'text']),
+            value: z.string(),
+            required: z.boolean(),
+          })),
+          templateBody: z.string(),
+          originalText: z.string(),
+        }),
+        400: errorResponseSchema,
+        401: errorResponseSchema,
+        404: errorResponseSchema,
+        500: errorResponseSchema,
+      },
+    },
+    onRequest: [app.authenticate],
+    handler: async (request, reply) => {
+      const { userId } = request.user;
+      const { documentId } = request.body;
+
+      try {
+        const result = await extractTemplateFromDocument(
+          app.prisma,
+          chat,
+          documentId,
+          userId,
+        );
+
+        return reply.status(200).send({
+          parameters: result.parameters,
+          templateBody: result.templateBody,
+          originalText: result.originalText,
+        });
+      } catch (error) {
+        const err = error as Error & { statusCode?: number };
+        request.log.error({ err: error }, 'Ошибка извлечения шаблона из документа');
+
+        if (err.statusCode === 404) {
+          return reply.status(404).send({
+            error: 'NotFound',
+            message: err.message,
+          });
+        }
+
+        if (err.statusCode === 400) {
+          return reply.status(400).send({
+            error: 'BadRequest',
+            message: err.message,
+          });
+        }
+
+        return reply.status(500).send({
+          error: 'InternalServerError',
+          message: 'Не удалось извлечь шаблон из документа',
+        });
+      }
+    },
+  });
+
+  // =========================================================================
+  // POST /templates/from-file — Извлечь шаблон из загружаемого файла
+  // =========================================================================
+  app.route({
+    method: 'POST',
+    url: '/templates/from-file',
+    schema: {
+      description: 'Извлечь шаблон из файла через LLM (multipart/form-data, не сохраняет)',
+      tags: ['templates'],
+      // Multipart — body-схема не задаётся
+      response: {
+        200: z.object({
+          parameters: z.array(z.object({
+            key: z.string(),
+            label: z.string(),
+            type: z.enum(['string', 'date', 'text']),
+            value: z.string(),
+            required: z.boolean(),
+          })),
+          templateBody: z.string(),
+          originalText: z.string(),
+        }),
+        400: errorResponseSchema,
+        401: errorResponseSchema,
+        500: errorResponseSchema,
+      },
+    },
+    onRequest: [app.authenticate],
+    handler: async (request, reply) => {
+      const file = await request.file();
+
+      if (!file) {
+        return reply.status(400).send({
+          error: 'BadRequest',
+          message: 'Файл не передан. Используйте поле "file" в multipart/form-data.',
+        });
+      }
+
+      // Извлекаем расширение из имени файла
+      const originalFilename = file.filename;
+      const extMatch = originalFilename.match(/\.([^.]+)$/);
+      const fileType = extMatch?.[1]?.toLowerCase() ?? '';
+
+      if (!isAllowedFileType(fileType)) {
+        return reply.status(400).send({
+          error: 'BadRequest',
+          message: `Неподдерживаемый формат файла: .${fileType}. Допустимые: ${ALLOWED_FILE_TYPES.join(', ')}`,
+        });
+      }
+
+      const buffer = await file.toBuffer();
+
+      try {
+        const result = await extractTemplateFromFile(
+          chat,
+          buffer,
+          fileType,
+          originalFilename,
+        );
+
+        return reply.status(200).send({
+          parameters: result.parameters,
+          templateBody: result.templateBody,
+          originalText: result.originalText,
+        });
+      } catch (error) {
+        const err = error as Error & { statusCode?: number };
+        request.log.error({ err: error }, 'Ошибка извлечения шаблона из файла');
+
+        if (err.statusCode === 400) {
+          return reply.status(400).send({
+            error: 'BadRequest',
+            message: err.message,
+          });
+        }
+
+        return reply.status(500).send({
+          error: 'InternalServerError',
+          message: 'Не удалось извлечь шаблон из файла',
+        });
+      }
     },
   });
 

@@ -3,7 +3,7 @@
  * Обёртка над fetch с авторизацией, обработкой ошибок и SSE-стримингом.
  */
 
-import type { User, Conversation, Message, Document, DocumentInfo, TemplateInfo, Template, LawInfo, LawSearchResult, CompareResult } from './types';
+import type { User, Conversation, Message, Document, DocumentInfo, TemplateInfo, Template, TemplateParam, LawInfo, LawSearchResult, CompareResult, ExtractedTemplate } from './types';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -261,6 +261,50 @@ export const templates = {
 
   /** URL для генерации .docx (используется в downloadDocx) */
   generateDocxUrl: (id: string) => `${API_BASE_URL}/templates/${id}/generate/docx`,
+
+  /** Извлечь шаблон из файла (multipart/form-data) */
+  extractFromFile: async (file: File): Promise<ExtractedTemplate> => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const token = getToken();
+    const response = await fetch(`${API_BASE_URL}/templates/from-file`, {
+      method: 'POST',
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        localStorage.removeItem('token');
+      }
+
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        body = await response.text().catch(() => undefined);
+      }
+
+      const message =
+        (body && typeof body === 'object' && 'message' in body
+          ? (body as { message: string }).message
+          : response.statusText) || response.statusText;
+
+      throw new ApiError(response.status, message, body);
+    }
+
+    return response.json();
+  },
+
+  /** Сохранить новый шаблон */
+  create: (data: { name: string; category: string; templateBody: string; parameters: TemplateParam[] }) =>
+    apiFetch<{ template: TemplateInfo }>('/templates', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 
   /** Скачать заполненный шаблон как .docx (возвращает Blob) */
   downloadDocx: async (id: string, params: Record<string, string>): Promise<Blob> => {

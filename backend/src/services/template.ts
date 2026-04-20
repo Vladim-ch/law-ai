@@ -21,7 +21,8 @@ import {
 } from 'docx';
 
 import { getSystemMessage } from '../lib/system-prompt.js';
-import { streamChat } from '../lib/llm.js';
+import { streamChat, chat } from '../lib/llm.js';
+import { getDocument, parseDocumentText } from './document.js';
 
 // ---------------------------------------------------------------------------
 // Типы параметров шаблона
@@ -624,4 +625,243 @@ ${filledText}
   ];
 
   return streamChat(messages);
+}
+
+// ---------------------------------------------------------------------------
+// Извлечение шаблона из документа через LLM
+// ---------------------------------------------------------------------------
+
+/** Параметр, извлечённый LLM из текста документа. */
+export interface ExtractedParameter {
+  key: string;       // snake_case: executor_name, contract_date
+  label: string;     // "Наименование исполнителя"
+  type: 'string' | 'date' | 'text';
+  value: string;     // найденное значение в документе
+  required: boolean;
+}
+
+/** Результат извлечения шаблона из документа. */
+export interface ExtractedTemplate {
+  parameters: ExtractedParameter[];
+  templateBody: string;   // текст с {{плейсхолдерами}}
+  originalText: string;   // оригинальный текст для превью
+}
+
+/** Промпт для извлечения параметров и создания шаблона из документа. */
+function buildExtractionPrompt(contentText: string): string {
+  return `Проанализируй юридический документ и создай из него шаблон для повторного использования.
+
+Задача:
+1. Найди все конкретные значения, которые нужно заменить на параметры: имена/наименования сторон, ИНН, адреса, даты, суммы, сроки, описания предмета договора.
+2. Замени каждое найденное значение на плейсхолдер {{key}} в тексте документа.
+3. Для каждого параметра укажи: ключ (snake_case, латиница), название на русском, тип (string/date/text), найденное значение, обязательность.
+
+ВАЖНО:
+- Ключи параметров — латиница, snake_case (например: executor_name, contract_date, price)
+- Не трогай юридические формулировки и ссылки на статьи — заменяй только конкретные данные
+- Если значение встречается несколько раз — используй один и тот же ключ
+- Тип "date" для дат, "text" для длинных описаний (>100 символов), "string" для остального
+
+Верни ответ СТРОГО в формате JSON (без markdown, без пояснений, только JSON):
+{
+  "parameters": [
+    { "key": "executor_name", "label": "Наименование исполнителя", "type": "string", "value": "ИП Иванов И.И.", "required": true },
+    { "key": "contract_date", "label": "Дата договора", "type": "date", "value": "01.06.2025", "required": true }
+  ],
+  "templateBody": "Текст документа с {{executor_name}} и {{contract_date}}..."
+}
+
+Документ:
+---
+${contentText}
+---`;
+}
+
+// ---------------------------------------------------------------------------
+// Robust JSON-парсер для ответов LLM
+// ---------------------------------------------------------------------------
+
+/** Структура, ожидаемая от LLM в JSON-ответе. */
+interface LLMExtractedJSON {
+  parameters: ExtractedParameter[];
+  templateBody: string;
+}
+
+/**
+ * Извлекает и парсит JSON из ответа LLM.
+ *
+ * LLM (Qwen 7B) может вернуть JSON в разных обёртках:
+ * 1. Чистый JSON
+ * 2. JSON в markdown code-блоке (```json ... ```)
+ * 3. Текст с пояснениями + JSON внутри
+ * 4. Полный мусор — ошибка
+ */
+export function parseExtractedJSON(llmResponse: string): LLMExtractedJSON {
+  const trimmed = llmResponse.trim();
+
+  // 1. Попробовать JSON.parse напрямую
+  try {
+    const parsed = JSON.parse(trimmed);
+    validateExtractedJSON(parsed);
+    return parsed;
+  } catch { /* продолжаем */ }
+
+  // 2. Найти ```json ... ``` и парсить содержимое
+  const codeBlockMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  if (codeBlockMatch?.[1]) {
+    try {
+      const parsed = JSON.parse(codeBlockMatch[1].trim());
+      validateExtractedJSON(parsed);
+      return parsed;
+    } catch { /* продолжаем */ }
+  }
+
+  // 3. Найти первый { ... последний } и парсить
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    const jsonCandidate = trimmed.slice(firstBrace, lastBrace + 1);
+    try {
+      const parsed = JSON.parse(jsonCandidate);
+      validateExtractedJSON(parsed);
+      return parsed;
+    } catch { /* продолжаем */ }
+  }
+
+  // 4. Ничего не сработало
+  throw new Error('Не удалось извлечь параметры из документа: LLM вернул невалидный ответ');
+}
+
+/**
+ * Проверяет структуру распарсенного JSON.
+ * Бросает ошибку, если структура не соответствует ожиданиям.
+ */
+function validateExtractedJSON(data: unknown): asserts data is LLMExtractedJSON {
+  if (typeof data !== 'object' || data === null) {
+    throw new Error('Ответ LLM не является объектом');
+  }
+
+  const obj = data as Record<string, unknown>;
+
+  if (!Array.isArray(obj.parameters)) {
+    throw new Error('Поле "parameters" отсутствует или не является массивом');
+  }
+
+  if (typeof obj.templateBody !== 'string' || obj.templateBody.length === 0) {
+    throw new Error('Поле "templateBody" отсутствует или пустое');
+  }
+
+  // Валидируем каждый параметр
+  for (const param of obj.parameters) {
+    if (typeof param !== 'object' || param === null) {
+      throw new Error('Элемент parameters не является объектом');
+    }
+    const p = param as Record<string, unknown>;
+    if (typeof p.key !== 'string' || typeof p.label !== 'string') {
+      throw new Error('Параметр должен содержать поля key и label');
+    }
+    if (!['string', 'date', 'text'].includes(p.type as string)) {
+      throw new Error(`Неизвестный тип параметра: ${p.type}`);
+    }
+  }
+}
+
+/** Температура для извлечения — максимально детерминированный ответ. */
+const EXTRACTION_TEMPERATURE = 0.1;
+
+/**
+ * Извлекает шаблон из загруженного документа через LLM.
+ *
+ * Алгоритм:
+ * 1. Загружает документ из БД (проверяет userId)
+ * 2. Проверяет наличие contentText
+ * 3. Отправляет текст в LLM с промптом для извлечения параметров
+ * 4. Парсит JSON-ответ LLM (с fallback для markdown-обёрток)
+ * 5. Возвращает ExtractedTemplate
+ *
+ * @param prisma — Prisma-клиент
+ * @param llmChat — функция chat() для вызова LLM
+ * @param documentId — UUID загруженного документа
+ * @param userId — UUID текущего пользователя (для проверки доступа)
+ */
+export async function extractTemplateFromDocument(
+  prisma: PrismaClient,
+  llmChat: typeof chat,
+  documentId: string,
+  userId: string,
+): Promise<ExtractedTemplate> {
+  // Загружаем документ с проверкой принадлежности пользователю
+  const document = await getDocument(prisma, documentId, userId);
+
+  if (!document) {
+    throw Object.assign(
+      new Error('Документ не найден или нет доступа'),
+      { statusCode: 404 },
+    );
+  }
+
+  if (!document.contentText) {
+    throw Object.assign(
+      new Error('Текст документа не извлечён. Загрузите документ в поддерживаемом формате (docx, pdf, txt)'),
+      { statusCode: 400 },
+    );
+  }
+
+  return extractTemplateFromText(llmChat, document.contentText);
+}
+
+/**
+ * Извлекает шаблон из файла напрямую (без предварительного upload в БД).
+ *
+ * Парсит текст из буфера файла через parseDocumentText,
+ * затем вызывает LLM для извлечения параметров.
+ *
+ * @param llmChat — функция chat() для вызова LLM
+ * @param buffer — буфер файла
+ * @param fileType — расширение файла (docx, pdf, txt, rtf)
+ * @param _filename — имя файла (для логирования, пока не используется)
+ */
+export async function extractTemplateFromFile(
+  llmChat: typeof chat,
+  buffer: Buffer,
+  fileType: string,
+  _filename: string,
+): Promise<ExtractedTemplate> {
+  const contentText = await parseDocumentText(buffer, fileType);
+
+  if (!contentText || contentText.trim().length === 0) {
+    throw Object.assign(
+      new Error('Не удалось извлечь текст из файла'),
+      { statusCode: 400 },
+    );
+  }
+
+  return extractTemplateFromText(llmChat, contentText);
+}
+
+/**
+ * Общая логика извлечения шаблона: отправка текста в LLM и парсинг ответа.
+ */
+async function extractTemplateFromText(
+  llmChat: typeof chat,
+  contentText: string,
+): Promise<ExtractedTemplate> {
+  const prompt = buildExtractionPrompt(contentText);
+
+  const messages: OpenAI.ChatCompletionMessageParam[] = [
+    {
+      role: 'user',
+      content: prompt,
+    },
+  ];
+
+  const llmResponse = await llmChat(messages, { temperature: EXTRACTION_TEMPERATURE });
+
+  const extracted = parseExtractedJSON(llmResponse);
+
+  return {
+    parameters: extracted.parameters,
+    templateBody: extracted.templateBody,
+    originalText: contentText,
+  };
 }

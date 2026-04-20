@@ -118,6 +118,22 @@ export interface CompareResult {
   stats: CompareStats;
 }
 
+/** Параметр, извлечённый AI из документа */
+export interface ExtractedParameter {
+  key: string;
+  label: string;
+  type: 'string' | 'date' | 'text';
+  value: string;
+  required: boolean;
+}
+
+/** Результат извлечения шаблона из файла */
+export interface ExtractedTemplate {
+  parameters: ExtractedParameter[];
+  templateBody: string;
+  originalText: string;
+}
+
 /** SSE-события от сервера */
 export type SSEEvent =
   | { type: 'message_start'; messageId: string }
