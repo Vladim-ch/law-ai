@@ -19,7 +19,8 @@
     "format:check": "prettier --check \"src/**/*.{ts,json,md}\"",
     "prisma:validate": "prisma validate",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev"
+    "prisma:migrate": "prisma migrate dev",
+    "import:laws": "tsx --env-file=../.env src/scripts/import-laws.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",

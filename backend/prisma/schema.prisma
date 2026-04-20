@@ -205,6 +205,25 @@ model KnowledgeBase {
   @@map("knowledge_base")
 }
 
+/// Нормативный акт РФ (кодекс, федеральный закон)
+model Law {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  /// Короткое название: "ГК РФ", "ТК РФ", "152-ФЗ"
+  name        String   @unique
+  /// Полное официальное название
+  fullName    String   @map("full_name") @db.Text
+  /// Категория: codex, federal_law, regulation
+  category    String
+  /// Полный текст акта (для хранения и переиндексации)
+  content     String   @db.Text
+  /// Количество проиндексированных чанков
+  chunksCount Int      @default(0) @map("chunks_count")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("laws")
+}
+
 /// Чанк текста для RAG-поиска (pgvector).
 /// Используется для нормативных актов, загруженных документов, базы знаний.
 /// Размерность 768 соответствует модели nomic-embed-text (Ollama).

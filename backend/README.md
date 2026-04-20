@@ -71,6 +71,29 @@ npm run prisma:validate
 
 Инфраструктурные сервисы (`docker compose up -d`) для `/health` **не нужны** — эндпоинт проверяет только сам процесс. Для следующих задач (Postgres/Redis/MinIO) потребуется `docker compose up -d` в корне.
 
+## Импорт нормативной базы
+
+Поддерживаемые форматы: `.txt`, `.docx`, `.pdf`, `.rtf`.
+
+**Вариант 1 — через скрипт (массовый импорт):**
+1. Положить файлы (.txt/.docx/.pdf) в `data/laws/`
+2. Описать в `data/laws/manifest.json`
+3. Запустить: `npm run import:laws`
+
+**Вариант 2 — через API (по одному, только ADMIN):**
+```bash
+# Из текста (JSON):
+curl -X POST http://localhost:4000/laws/import \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"ГК РФ","fullName":"Гражданский кодекс","category":"codex","content":"..."}'
+
+# Из файла (multipart):
+curl -X POST http://localhost:4000/laws/import/file \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@gk-rf.pdf" -F "name=ГК РФ" -F "fullName=Гражданский кодекс" -F "category=codex"
+```
+
 ## Что ещё не реализовано
 
 - Модели Prisma и миграции БД (User, Conversation, Message, Document, Template, Task, KnowledgeBase — см. ТЗ §5).

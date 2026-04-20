@@ -33,6 +33,7 @@ import authRoutes from './routes/auth.js';
 import conversationRoutes from './routes/conversations.js';
 import documentRoutes from './routes/documents.js';
 import templateRoutes from './routes/templates.js';
+import lawRoutes from './routes/laws.js';
 
 /**
  * Тип возвращаемого инстанса: Fastify с подключённым ZodTypeProvider.
@@ -179,6 +180,9 @@ export async function buildServer(): Promise<AppInstance> {
 
   // Templates — шаблоны юридических документов, генерация .docx, LLM-доработка.
   await app.register(templateRoutes);
+
+  // Laws — нормативные акты РФ: список, поиск, импорт.
+  await app.register(lawRoutes);
 
   return app;
 }
