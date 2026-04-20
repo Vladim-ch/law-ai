@@ -204,3 +204,33 @@ model KnowledgeBase {
   @@index([createdById])
   @@map("knowledge_base")
 }
+
+/// Чанк текста для RAG-поиска (pgvector).
+/// Используется для нормативных актов, загруженных документов, базы знаний.
+/// Размерность 768 соответствует модели nomic-embed-text (Ollama).
+model Chunk {
+  id         String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+
+  /// Тип источника: law (нормативный акт), document (загруженный документ), knowledge_base
+  sourceType String   @map("source_type")
+
+  /// ID источника (documentId, lawId, knowledgeBaseId)
+  sourceId   String   @map("source_id") @db.Uuid
+
+  /// Порядковый номер чанка в документе
+  chunkIndex Int      @map("chunk_index")
+
+  /// Текст чанка (~500-1000 токенов)
+  content    String   @db.Text
+
+  /// Эмбеддинг от nomic-embed-text (768 размерность)
+  embedding  Unsupported("vector(768)")?
+
+  /// Метаданные: название закона, номер статьи, заголовок раздела и т.п.
+  metadata   Json?
+
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([sourceType, sourceId])
+  @@map("chunks")
+}

@@ -161,6 +161,9 @@ services:
       LLM_BASE_URL: http://ollama:11434/v1
       LLM_MODEL: ${LLM_MODEL}
       LLM_API_KEY: ${LLM_API_KEY:-ollama}
+      # Эмбеддинги (RAG).
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
       # Логирование и лимиты.
       LOG_LEVEL: ${LOG_LEVEL}
       MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE}
@@ -291,6 +294,8 @@ services:
       /bin/sh -c "
       ollama pull ${LLM_MODEL:-qwen2.5:7b};
       echo 'Модель ${LLM_MODEL:-qwen2.5:7b} готова';
+      ollama pull ${EMBEDDING_MODEL:-nomic-embed-text};
+      echo 'Модель эмбеддингов ${EMBEDDING_MODEL:-nomic-embed-text} готова';
       "
     restart: "no"
     networks:

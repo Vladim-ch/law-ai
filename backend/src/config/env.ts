@@ -67,6 +67,13 @@ const envSchema = z.object({
   // API-ключ. Ollama не требует ключ, но OpenAI SDK ожидает непустое значение.
   LLM_API_KEY: z.string().min(1).default('ollama'),
 
+  // --- Эмбеддинги (RAG) ---
+  // Модель эмбеддингов для семантического поиска. По умолчанию nomic-embed-text
+  // (768 размерность, работает на CPU, хорошо с русским текстом).
+  EMBEDDING_MODEL: z.string().min(1).default('nomic-embed-text'),
+  // Размерность вектора. Должна совпадать с моделью и определением vector() в БД.
+  EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(768),
+
   // --- Логирование ---
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])

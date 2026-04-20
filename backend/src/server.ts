@@ -27,6 +27,7 @@ import redisPlugin from './plugins/redis.js';
 import minioPlugin from './plugins/minio.js';
 import jwtPlugin from './plugins/jwt.js';
 import llmPlugin from './plugins/llm.js';
+import embeddingPlugin from './plugins/embedding.js';
 import healthRoute from './routes/health.js';
 import authRoutes from './routes/auth.js';
 import conversationRoutes from './routes/conversations.js';
@@ -153,6 +154,7 @@ export async function buildServer(): Promise<AppInstance> {
   await app.register(minioPlugin);
   await app.register(jwtPlugin);
   await app.register(llmPlugin);
+  await app.register(embeddingPlugin);
 
   // --- Multipart (обработка загрузки файлов) ---------------------------------
   // Регистрируем до роутов, чтобы request.file() был доступен в обработчиках.
