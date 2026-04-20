@@ -220,7 +220,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
 
               case 'error':
-                set({ isStreaming: false, streamingContent: '' });
+                // Сохраняем накопленный текст, чтобы не терять ответ
+                if (fullContent) {
+                  const partialMessage: Message = {
+                    id: assistantMessageId || `assistant-${Date.now()}`,
+                    role: 'ASSISTANT',
+                    content: fullContent + '\n\n*(ответ прерван)*',
+                    createdAt: new Date().toISOString(),
+                  };
+                  set((state) => ({
+                    messages: [...state.messages, partialMessage],
+                    isStreaming: false,
+                    streamingContent: '',
+                  }));
+                } else {
+                  set({ isStreaming: false, streamingContent: '' });
+                }
                 console.error('SSE error:', event.error);
                 break;
             }
@@ -246,7 +261,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Обновляем список диалогов (title мог измениться)
       get().loadConversations();
     } catch (error) {
-      set({ isStreaming: false, streamingContent: '' });
+      // Сохраняем накопленный текст, если стриминг прервался с ошибкой
+      const currentStreaming = get().streamingContent;
+      if (currentStreaming) {
+        const partialMessage: Message = {
+          id: `assistant-${Date.now()}`,
+          role: 'ASSISTANT',
+          content: currentStreaming + '\n\n*(ответ прерван)*',
+          createdAt: new Date().toISOString(),
+        };
+        set((state) => ({
+          messages: [...state.messages, partialMessage],
+          isStreaming: false,
+          streamingContent: '',
+        }));
+      } else {
+        set({ isStreaming: false, streamingContent: '' });
+      }
       console.error('Ошибка отправки сообщения:', error);
     }
   },

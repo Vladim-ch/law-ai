@@ -11,6 +11,7 @@ import type { InputJsonValue } from '@prisma/client/runtime/library';
 
 import { getSystemMessage } from '../lib/system-prompt.js';
 import { streamChat } from '../lib/llm.js';
+import { semanticSearch } from './rag.js';
 
 // ---------------------------------------------------------------------------
 // Типы
@@ -170,6 +171,15 @@ export async function getConversationWithMessages(
 /** Лимит символов текста документа, вставляемого в LLM-контекст. */
 const DOCUMENT_CONTEXT_CHAR_LIMIT = 50_000;
 
+/** Максимальное количество чанков из RAG-поиска */
+const RAG_CHUNK_LIMIT = 5;
+
+/** Минимальный порог cosine similarity для включения чанка в контекст */
+const RAG_SIMILARITY_THRESHOLD = 0.5;
+
+/** Максимальная длина RAG-контекста в символах (защита от переполнения окна) */
+const RAG_CONTEXT_CHAR_LIMIT = 10_000;
+
 /**
  * Отправляет сообщение пользователя и подготавливает LLM-стрим.
  *
@@ -248,12 +258,64 @@ export async function sendMessage(
     orderBy: { createdAt: 'asc' },
   });
 
+  // RAG: ищем релевантные нормы по тексту сообщения пользователя
+  let ragContext = '';
+  try {
+    const ragResults = await semanticSearch(prisma, {
+      query: content,
+      sourceType: undefined,
+      limit: RAG_CHUNK_LIMIT,
+    });
+
+    // Фильтруем по порогу релевантности
+    const relevant = ragResults.filter(r => r.similarity >= RAG_SIMILARITY_THRESHOLD);
+
+    if (relevant.length > 0) {
+      // Дедупликация по содержимому чанков
+      const seen = new Set<string>();
+      const unique = relevant.filter(r => {
+        if (seen.has(r.chunkId)) return false;
+        seen.add(r.chunkId);
+        return true;
+      });
+
+      const parts: string[] = [];
+      let totalLength = 0;
+
+      for (const r of unique) {
+        const meta = r.metadata as Record<string, unknown> | null;
+        const source = (meta?.lawName ?? meta?.filename ?? 'Документ') as string;
+        const part = `[${source}]: ${r.content}`;
+
+        // Обрезаем, если RAG-контекст превышает лимит
+        if (totalLength + part.length > RAG_CONTEXT_CHAR_LIMIT) break;
+
+        parts.push(part);
+        totalLength += part.length;
+      }
+
+      if (parts.length > 0) {
+        ragContext = parts.join('\n\n');
+      }
+    }
+  } catch {
+    // RAG-поиск не должен блокировать чат — если упал, продолжаем без контекста
+  }
+
   // Формируем массив сообщений для LLM:
-  // системный промпт → история → [контекст документа] → текущее сообщение
+  // системный промпт → история → [RAG-контекст] → [контекст документа] → текущее сообщение
   const llmMessages: OpenAI.ChatCompletionMessageParam[] = [
     getSystemMessage(),
     ...previousMessages.slice(0, -1).map(toOpenAIMessage),
   ];
+
+  // Вставляем RAG-контекст из нормативной базы перед user-сообщением
+  if (ragContext) {
+    llmMessages.push({
+      role: 'system' as const,
+      content: `Контекст из нормативной базы (используй при ответе, ссылайся на конкретные статьи):\n\n${ragContext}`,
+    });
+  }
 
   // Вставляем контекст документа перед текущим user-сообщением
   if (documentContext) {
