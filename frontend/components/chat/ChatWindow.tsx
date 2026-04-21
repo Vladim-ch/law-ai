@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
-import { Scale, MessageSquarePlus } from 'lucide-react';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { Scale, MessageSquarePlus, FileDown, Loader2 } from 'lucide-react';
 
 import { useChatStore } from '@/stores/chat';
+import { conversations as conversationsApi, downloadBlob } from '@/lib/api';
 import { MessageBubble } from './MessageBubble';
 import { StreamingBubble } from './StreamingBubble';
 import { MessageInput } from './MessageInput';
@@ -16,6 +17,7 @@ import { MessageInput } from './MessageInput';
 export function ChatWindow() {
   const {
     currentConversationId,
+    conversations,
     messages,
     isStreaming,
     streamingContent,
@@ -24,11 +26,34 @@ export function ChatWindow() {
   } = useChatStore();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [isExporting, setIsExporting] = useState(false);
 
   // Автоскролл при новых сообщениях и стриминге
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingContent]);
+
+  // Текущий диалог для отображения заголовка
+  const currentConversation = conversations.find(
+    (c) => c.id === currentConversationId,
+  );
+
+  /** Экспорт текущего диалога в .docx */
+  const handleExportDocx = useCallback(async () => {
+    if (!currentConversationId || isExporting) return;
+    setIsExporting(true);
+    try {
+      const blob = await conversationsApi.exportDocx(currentConversationId);
+      const date = currentConversation
+        ? new Date(currentConversation.createdAt).toLocaleDateString('ru-RU')
+        : new Date().toLocaleDateString('ru-RU');
+      downloadBlob(blob, `Диалог_${date}.docx`);
+    } catch (err) {
+      console.error('Ошибка экспорта диалога:', err);
+    } finally {
+      setIsExporting(false);
+    }
+  }, [currentConversationId, currentConversation, isExporting]);
 
   // Если нет выбранного диалога — приветственный экран
   if (!currentConversationId) {
@@ -37,6 +62,27 @@ export function ChatWindow() {
 
   return (
     <div className="flex flex-1 flex-col">
+      {/* Заголовок чата с кнопкой экспорта */}
+      <div className="flex items-center justify-between border-b border-surface-elevated px-4 py-3">
+        <h2 className="min-w-0 truncate text-sm font-medium text-gray-300">
+          {currentConversation?.title || 'Новый диалог'}
+        </h2>
+        <button
+          onClick={handleExportDocx}
+          disabled={isExporting || messages.length === 0}
+          className="ml-3 flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-gray-400 transition-colors hover:bg-surface-elevated hover:text-gray-200 disabled:pointer-events-none disabled:opacity-40"
+          title="Экспорт в Word"
+          aria-label="Экспорт в Word"
+        >
+          {isExporting ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <FileDown className="h-4 w-4" />
+          )}
+          <span>{isExporting ? 'Экспорт...' : 'Word'}</span>
+        </button>
+      </div>
+
       {/* Список сообщений */}
       <div className="flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto max-w-3xl space-y-6">

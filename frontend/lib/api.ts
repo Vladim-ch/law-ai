@@ -128,6 +128,17 @@ export const conversations = {
   delete: (id: string) =>
     apiFetch<void>(`/conversations/${id}`, { method: 'DELETE' }),
 
+  /** Экспорт диалога в .docx (возвращает Blob) */
+  exportDocx: async (id: string): Promise<Blob> => {
+    const token = getToken();
+    const response = await fetch(`${API_BASE_URL}/conversations/${id}/export/docx`, {
+      method: 'POST',
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!response.ok) throw new ApiError(response.status, response.statusText);
+    return response.blob();
+  },
+
   /**
    * Отправить сообщение и получить SSE-поток ответа.
    * Возвращает Response, чтобы вызывающий код мог читать ReadableStream.
@@ -173,6 +184,19 @@ export const ALLOWED_EXTENSIONS = '.docx,.pdf,.txt,.rtf';
 
 /** Максимальный размер файла — 50 МБ */
 export const MAX_FILE_SIZE = 50 * 1024 * 1024;
+
+/**
+ * Скачивает Blob как файл через временную ссылку.
+ * Используется для экспорта .docx и других бинарных ответов API.
+ */
+export function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 /** Методы для работы с документами */
 export const documents = {
@@ -228,6 +252,21 @@ export const documents = {
 
   /** URL для скачивания документа */
   downloadUrl: (id: string) => `${API_BASE_URL}/documents/${id}/download`,
+
+  /** Анализ документа с экспортом в .docx (возвращает Blob) */
+  analyzeDocx: async (id: string, prompt?: string): Promise<Blob> => {
+    const token = getToken();
+    const response = await fetch(`${API_BASE_URL}/documents/${id}/analyze/docx`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ prompt }),
+    });
+    if (!response.ok) throw new ApiError(response.status, response.statusText);
+    return response.blob();
+  },
 
   /** Сравнить два документа */
   compare: (documentIdA: string, documentIdB: string) =>
