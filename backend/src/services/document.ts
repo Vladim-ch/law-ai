@@ -14,6 +14,7 @@ import { PDFParse } from 'pdf-parse';
 
 import { getSystemMessage } from '../lib/system-prompt.js';
 import { streamChat, chat } from '../lib/llm.js';
+import { indexDocument, deleteChunks } from './rag.js';
 
 // ---------------------------------------------------------------------------
 // Допустимые расширения файлов
@@ -142,6 +143,21 @@ export async function uploadDocument(
     },
   });
 
+  // Автоиндексация в RAG (асинхронно, не блокирует ответ)
+  // На CPU генерация эмбеддингов может занять минуту — запускаем fire-and-forget
+  if (document.contentText) {
+    indexDocument(prisma, {
+      sourceType: 'document',
+      sourceId: document.id,
+      text: document.contentText,
+      metadata: { filename: document.filename, fileType: document.fileType, userId },
+    }).then((chunksCount) => {
+      console.log(`Документ ${document.filename} проиндексирован: ${chunksCount} чанков`);
+    }).catch((err) => {
+      console.error(`Ошибка индексации документа ${document.filename}:`, err);
+    });
+  }
+
   return { document, parseError };
 }
 
@@ -234,6 +250,9 @@ export async function deleteDocument(
   if (!document) {
     return false;
   }
+
+  // Удаляем чанки из RAG-индекса
+  await deleteChunks(prisma, 'document', documentId);
 
   // Удаляем файл из MinIO
   await minio.removeObject(bucket, document.filePath);

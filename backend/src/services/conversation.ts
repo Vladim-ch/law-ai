@@ -168,6 +168,46 @@ export async function getConversationWithMessages(
   return { conversation, messages: messages as Message[] };
 }
 
+// ---------------------------------------------------------------------------
+// Эвристика: нужен ли RAG-поиск для данного сообщения
+// ---------------------------------------------------------------------------
+
+/**
+ * Определяет, нужно ли запускать RAG-поиск для сообщения пользователя.
+ *
+ * Логика:
+ * 1. Слишком короткие сообщения (< 20 символов) — скорее всего приветствие/подтверждение
+ * 2. Стоп-фразы (приветствия, благодарности, односложные ответы) — пропускаем
+ * 3. Юридические маркеры — точно нужен RAG
+ * 4. Остальные сообщения >= 40 символов — включаем RAG на всякий случай
+ */
+function shouldUseRAG(content: string): boolean {
+  const trimmed = content.trim();
+
+  // Минимальная длина — короткие фразы редко нуждаются в RAG
+  if (trimmed.length < 20) return false;
+
+  // Стоп-фразы: приветствия, благодарности, бытовые односложные ответы
+  const skipPatterns = [
+    /^(привет|здравствуй|добрый\s+(день|вечер|утро)|спасибо|благодарю|пока|до свидания)/i,
+    /^(да|нет|ок|хорошо|понятно|ясно|согласен|принято)$/i,
+  ];
+  if (skipPatterns.some((p) => p.test(trimmed))) return false;
+
+  // Юридические маркеры — если есть, точно нужен RAG
+  const legalMarkers = [
+    /стать[яи]/, /закон/, /кодекс/, /ФЗ/, /НК/, /ГК/, /ТК/, /АПК/,
+    /договор/, /иск/, /давност/, /ответственност/, /обязательств/,
+    /нарушени/, /штраф/, /пен[яи]/, /неустойк/, /убытк/,
+    /арбитраж/, /суд/, /претензи/, /доверенност/, /право/,
+    /налог/, /увольнени/, /трудово[йе]/, /аренд/, /поставк/,
+  ];
+  if (legalMarkers.some((p) => p.test(content))) return true;
+
+  // Для сообщений средней длины — включаем RAG (лучше лишний раз поискать)
+  return trimmed.length >= 40;
+}
+
 /** Лимит символов текста документа, вставляемого в LLM-контекст. */
 const DOCUMENT_CONTEXT_CHAR_LIMIT = 50_000;
 
@@ -259,47 +299,50 @@ export async function sendMessage(
   });
 
   // RAG: ищем релевантные нормы по тексту сообщения пользователя
+  // Эвристика shouldUseRAG отсекает приветствия и бытовые фразы — экономим CPU
   let ragContext = '';
-  try {
-    const ragResults = await semanticSearch(prisma, {
-      query: content,
-      sourceType: undefined,
-      limit: RAG_CHUNK_LIMIT,
-    });
-
-    // Фильтруем по порогу релевантности
-    const relevant = ragResults.filter(r => r.similarity >= RAG_SIMILARITY_THRESHOLD);
-
-    if (relevant.length > 0) {
-      // Дедупликация по содержимому чанков
-      const seen = new Set<string>();
-      const unique = relevant.filter(r => {
-        if (seen.has(r.chunkId)) return false;
-        seen.add(r.chunkId);
-        return true;
+  if (shouldUseRAG(content)) {
+    try {
+      const ragResults = await semanticSearch(prisma, {
+        query: content,
+        userId,  // Документы — только свои, НПА и база знаний — общие
+        limit: RAG_CHUNK_LIMIT,
       });
 
-      const parts: string[] = [];
-      let totalLength = 0;
+      // Фильтруем по порогу релевантности
+      const relevant = ragResults.filter(r => r.similarity >= RAG_SIMILARITY_THRESHOLD);
 
-      for (const r of unique) {
-        const meta = r.metadata as Record<string, unknown> | null;
-        const source = (meta?.lawName ?? meta?.filename ?? 'Документ') as string;
-        const part = `[${source}]: ${r.content}`;
+      if (relevant.length > 0) {
+        // Дедупликация по содержимому чанков
+        const seen = new Set<string>();
+        const unique = relevant.filter(r => {
+          if (seen.has(r.chunkId)) return false;
+          seen.add(r.chunkId);
+          return true;
+        });
 
-        // Обрезаем, если RAG-контекст превышает лимит
-        if (totalLength + part.length > RAG_CONTEXT_CHAR_LIMIT) break;
+        const parts: string[] = [];
+        let totalLength = 0;
 
-        parts.push(part);
-        totalLength += part.length;
+        for (const r of unique) {
+          const meta = r.metadata as Record<string, unknown> | null;
+          const source = (meta?.lawName ?? meta?.filename ?? 'Документ') as string;
+          const part = `[${source}]: ${r.content}`;
+
+          // Обрезаем, если RAG-контекст превышает лимит
+          if (totalLength + part.length > RAG_CONTEXT_CHAR_LIMIT) break;
+
+          parts.push(part);
+          totalLength += part.length;
+        }
+
+        if (parts.length > 0) {
+          ragContext = parts.join('\n\n');
+        }
       }
-
-      if (parts.length > 0) {
-        ragContext = parts.join('\n\n');
-      }
+    } catch {
+      // RAG-поиск не должен блокировать чат — если упал, продолжаем без контекста
     }
-  } catch {
-    // RAG-поиск не должен блокировать чат — если упал, продолжаем без контекста
   }
 
   // Формируем массив сообщений для LLM:

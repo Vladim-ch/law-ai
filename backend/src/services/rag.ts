@@ -48,6 +48,8 @@ export interface IndexDocumentParams {
 export interface SearchParams {
   query: string;
   sourceType?: ChunkSourceType;
+  /** Фильтр по владельцу документа (для sourceType='document' — только свои) */
+  userId?: string;
   limit?: number;
 }
 
@@ -272,10 +274,13 @@ export async function semanticSearch(
   prisma: PrismaClient,
   params: SearchParams,
 ): Promise<SearchResult[]> {
-  const { query, sourceType, limit = DEFAULT_SEARCH_LIMIT } = params;
+  const { query, sourceType, userId, limit = DEFAULT_SEARCH_LIMIT } = params;
 
   const queryEmbedding = await generateEmbedding(query);
   const embeddingStr = `[${queryEmbedding.join(',')}]`;
+
+  // Фильтр по userId: документы — только свои, НПА (law) и база знаний — общие
+  const userIdFilter = userId ?? null;
 
   const rows = await prisma.$queryRaw<SearchResult[]>`
     SELECT
@@ -289,6 +294,11 @@ export async function semanticSearch(
     FROM chunks
     WHERE embedding IS NOT NULL
       AND (${sourceType}::text IS NULL OR source_type = ${sourceType}::text)
+      AND (
+        source_type != 'document'
+        OR ${userIdFilter}::text IS NULL
+        OR metadata->>'userId' = ${userIdFilter}
+      )
     ORDER BY embedding <=> ${embeddingStr}::vector
     LIMIT ${limit}
   `;
@@ -318,10 +328,13 @@ export async function hybridSearch(
   prisma: PrismaClient,
   params: SearchParams,
 ): Promise<SearchResult[]> {
-  const { query, sourceType, limit = DEFAULT_SEARCH_LIMIT } = params;
+  const { query, sourceType, userId, limit = DEFAULT_SEARCH_LIMIT } = params;
 
   const queryEmbedding = await generateEmbedding(query);
   const embeddingStr = `[${queryEmbedding.join(',')}]`;
+
+  // Фильтр по userId: документы — только свои, НПА (law) и база знаний — общие
+  const userIdFilter = userId ?? null;
 
   const rows = await prisma.$queryRaw<SearchResult[]>`
     SELECT
@@ -336,6 +349,11 @@ export async function hybridSearch(
     FROM chunks
     WHERE embedding IS NOT NULL
       AND (${sourceType}::text IS NULL OR source_type = ${sourceType}::text)
+      AND (
+        source_type != 'document'
+        OR ${userIdFilter}::text IS NULL
+        OR metadata->>'userId' = ${userIdFilter}
+      )
       AND (embedding <=> ${embeddingStr}::vector) < 0.5
     ORDER BY (
       0.7 * (1 - (embedding <=> ${embeddingStr}::vector)) +
