@@ -49,7 +49,7 @@ FROM node:20-alpine AS runtime
 
 # openssl — требуется Prisma Engine в рантайме.
 # wget — используется для healthcheck (curl в alpine нет по умолчанию).
-RUN apk add --no-cache openssl wget
+RUN apk add --no-cache openssl wget poppler-utils
 
 WORKDIR /app
 

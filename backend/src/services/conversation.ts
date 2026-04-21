@@ -11,7 +11,7 @@ import type { InputJsonValue } from '@prisma/client/runtime/library';
 
 import { getSystemMessage } from '../lib/system-prompt.js';
 import { streamChat } from '../lib/llm.js';
-import { semanticSearch } from './rag.js';
+import { hybridSearch } from './rag.js';
 
 // ---------------------------------------------------------------------------
 // Типы
@@ -212,10 +212,10 @@ function shouldUseRAG(content: string): boolean {
 const DOCUMENT_CONTEXT_CHAR_LIMIT = 50_000;
 
 /** Максимальное количество чанков из RAG-поиска */
-const RAG_CHUNK_LIMIT = 5;
+const RAG_CHUNK_LIMIT = 10;
 
-/** Минимальный порог cosine similarity для включения чанка в контекст */
-const RAG_SIMILARITY_THRESHOLD = 0.5;
+/** Минимальный порог similarity для включения чанка в контекст */
+const RAG_SIMILARITY_THRESHOLD = 0.3;
 
 /** Максимальная длина RAG-контекста в символах (защита от переполнения окна) */
 const RAG_CONTEXT_CHAR_LIMIT = 10_000;
@@ -303,7 +303,7 @@ export async function sendMessage(
   let ragContext = '';
   if (shouldUseRAG(content)) {
     try {
-      const ragResults = await semanticSearch(prisma, {
+      const ragResults = await hybridSearch(prisma, {
         query: content,
         userId,  // Документы — только свои, НПА и база знаний — общие
         limit: RAG_CHUNK_LIMIT,

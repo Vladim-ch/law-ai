@@ -8,7 +8,7 @@
 
 import type { PrismaClient } from '@prisma/client';
 
-import { generateEmbedding, generateEmbeddings } from '../lib/embeddings.js';
+import { generateEmbedding } from '../lib/embeddings.js';
 
 // ---------------------------------------------------------------------------
 // Типы
@@ -61,8 +61,12 @@ const DEFAULT_CHUNK_SIZE = 1000;
 const DEFAULT_OVERLAP = 200;
 const DEFAULT_SEARCH_LIMIT = 10;
 
-/** Размер батча при генерации эмбеддингов (экономим RAM на CPU) */
-const EMBEDDING_BATCH_SIZE = 10;
+/**
+ * Лимит длины чанка (символы) перед генерацией эмбеддинга.
+ * nomic-embed-text: контекст ~8K токенов ≈ 4000 символов русского текста.
+ * 2000 — безопасный лимит с запасом.
+ */
+const EMBEDDING_CHAR_LIMIT = 2000;
 
 // ---------------------------------------------------------------------------
 // Чанкинг
@@ -185,8 +189,9 @@ function groupIntoChunks(
  * Индексирует документ: разбивает на чанки, генерирует эмбеддинги, сохраняет
  * в таблицу `chunks` с pgvector.
  *
- * Эмбеддинги генерируются батчами по EMBEDDING_BATCH_SIZE штук — это
- * экономит RAM при работе на CPU (nomic-embed-text).
+ * Эмбеддинги генерируются поштучно — батчевый запрос Ollama конкатенирует
+ * все тексты и превышает контекст модели. Каждый чанк обрезается до
+ * EMBEDDING_CHAR_LIMIT символов для безопасности.
  *
  * @param prisma — клиент Prisma для raw-запросов
  * @param params — параметры индексации (sourceType, sourceId, text, metadata)
@@ -204,33 +209,29 @@ export async function indexDocument(
   // Удаляем старые чанки перед переиндексацией
   await deleteChunks(prisma, sourceType, sourceId);
 
-  // Генерируем эмбеддинги и сохраняем батчами
-  for (let i = 0; i < chunks.length; i += EMBEDDING_BATCH_SIZE) {
-    const batch = chunks.slice(i, i + EMBEDDING_BATCH_SIZE);
-    const embeddings = await generateEmbeddings(batch);
+  // Генерируем эмбеддинги поштучно — батчевый запрос в Ollama конкатенирует
+  // все тексты и превышает контекст модели (8K токенов).
+  for (let i = 0; i < chunks.length; i++) {
+    const content = chunks[i]!;
+    // Обрезаем до безопасного лимита, чтобы не превысить контекст nomic-embed-text
+    const truncated = content.slice(0, EMBEDDING_CHAR_LIMIT);
+    const embedding = await generateEmbedding(truncated);
+    const embeddingStr = `[${embedding.join(',')}]`;
+    const metadataJson = metadata ? JSON.stringify(metadata) : null;
 
-    // Сохраняем каждый чанк из батча
-    for (let j = 0; j < batch.length; j++) {
-      const chunkIndex = i + j;
-      const content = batch[j]!;
-      const embedding = embeddings[j]!;
-      const embeddingStr = `[${embedding.join(',')}]`;
-      const metadataJson = metadata ? JSON.stringify(metadata) : null;
-
-      await prisma.$executeRaw`
-        INSERT INTO chunks (id, source_type, source_id, chunk_index, content, embedding, metadata, created_at)
-        VALUES (
-          uuid_generate_v4(),
-          ${sourceType},
-          ${sourceId}::uuid,
-          ${chunkIndex},
-          ${content},
-          ${embeddingStr}::vector,
-          ${metadataJson}::jsonb,
-          NOW()
-        )
-      `;
-    }
+    await prisma.$executeRaw`
+      INSERT INTO chunks (id, source_type, source_id, chunk_index, content, embedding, metadata, created_at)
+      VALUES (
+        uuid_generate_v4(),
+        ${sourceType},
+        ${sourceId}::uuid,
+        ${i},
+        ${content},
+        ${embeddingStr}::vector,
+        ${metadataJson}::jsonb,
+        NOW()
+      )
+    `;
   }
 
   return chunks.length;
@@ -330,7 +331,14 @@ export async function hybridSearch(
 ): Promise<SearchResult[]> {
   const { query, sourceType, userId, limit = DEFAULT_SEARCH_LIMIT } = params;
 
-  const queryEmbedding = await generateEmbedding(query);
+  // Если эмбеддинг-модель недоступна — fallback на чисто текстовый поиск
+  let queryEmbedding: number[];
+  try {
+    queryEmbedding = await generateEmbedding(query);
+  } catch {
+    return textSearch(prisma, { query, sourceType, userId, limit });
+  }
+
   const embeddingStr = `[${queryEmbedding.join(',')}]`;
 
   // Фильтр по userId: документы — только свои, НПА (law) и база знаний — общие
@@ -354,11 +362,95 @@ export async function hybridSearch(
         OR ${userIdFilter}::text IS NULL
         OR metadata->>'userId' = ${userIdFilter}
       )
-      AND (embedding <=> ${embeddingStr}::vector) < 0.5
+      AND (embedding <=> ${embeddingStr}::vector) < 0.8
     ORDER BY (
       0.7 * (1 - (embedding <=> ${embeddingStr}::vector)) +
       0.3 * similarity(content, ${query})
     ) DESC
+    LIMIT ${limit}
+  `;
+
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Полнотекстовый поиск (ILIKE + pg_trgm)
+// ---------------------------------------------------------------------------
+
+/**
+ * Экранирует спецсимволы ILIKE-паттерна (`%`, `_`, `\`),
+ * чтобы они интерпретировались как литералы.
+ */
+function escapeIlike(str: string): string {
+  return str.replace(/[%_\\]/g, '\\$&');
+}
+
+/**
+ * Полнотекстовый поиск: точное вхождение подстроки (ILIKE) + pg_trgm fallback.
+ *
+ * Приоритет:
+ *   1. Чанки, содержащие запрос как подстроку (ILIKE) — similarity = 1.0
+ *   2. Нечёткие совпадения через pg_trgm (similarity > 0.1), исключая уже найденные
+ *
+ * Это гарантирует, что запрос "Статья 244" первым вернёт чанк с точным
+ * вхождением "Статья 244", а не чанки со "Статья 240" / "Статья 245".
+ *
+ * @param prisma — клиент Prisma
+ * @param params — query, sourceType (фильтр), userId, limit
+ * @returns массив результатов, отсортированных по similarity DESC
+ */
+export async function textSearch(
+  prisma: PrismaClient,
+  params: SearchParams,
+): Promise<SearchResult[]> {
+  const { query, sourceType, userId, limit = DEFAULT_SEARCH_LIMIT } = params;
+
+  const userIdFilter = userId ?? null;
+  // Экранируем спецсимволы ILIKE, чтобы %, _ и \ в запросе были литералами
+  const escapedQuery = escapeIlike(query);
+
+  const rows = await prisma.$queryRaw<SearchResult[]>`
+    (
+      -- Точные вхождения подстроки — высший приоритет
+      SELECT
+        id AS "chunkId",
+        source_type AS "sourceType",
+        source_id AS "sourceId",
+        chunk_index AS "chunkIndex",
+        content,
+        metadata,
+        1.0::double precision AS similarity
+      FROM chunks
+      WHERE content ILIKE '%' || ${escapedQuery} || '%'
+        AND (${sourceType}::text IS NULL OR source_type = ${sourceType}::text)
+        AND (
+          source_type != 'document'
+          OR ${userIdFilter}::text IS NULL
+          OR metadata->>'userId' = ${userIdFilter}
+        )
+    )
+    UNION ALL
+    (
+      -- Нечёткие совпадения (pg_trgm), исключая уже найденные точные
+      SELECT
+        id AS "chunkId",
+        source_type AS "sourceType",
+        source_id AS "sourceId",
+        chunk_index AS "chunkIndex",
+        content,
+        metadata,
+        similarity(content, ${query})::double precision AS similarity
+      FROM chunks
+      WHERE similarity(content, ${query}) > 0.1
+        AND content NOT ILIKE '%' || ${escapedQuery} || '%'
+        AND (${sourceType}::text IS NULL OR source_type = ${sourceType}::text)
+        AND (
+          source_type != 'document'
+          OR ${userIdFilter}::text IS NULL
+          OR metadata->>'userId' = ${userIdFilter}
+        )
+    )
+    ORDER BY similarity DESC
     LIMIT ${limit}
   `;
 

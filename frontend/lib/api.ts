@@ -333,6 +333,19 @@ export const laws = {
       `/laws/search?query=${encodeURIComponent(query)}&limit=${limit}`,
     ),
 
+  /** Текстовый поиск по нормативной базе (pg_trgm) */
+  searchText: (query: string, limit = 20) =>
+    apiFetch<{ results: LawSearchResult[] }>(
+      `/laws/search/text?query=${encodeURIComponent(query)}&limit=${limit}`,
+    ),
+
+  /** Получить соседние фрагменты чанка */
+  chunkNeighbors: (chunkId: string, range = 2) =>
+    apiFetch<{
+      chunks: { chunkIndex: number; content: string }[];
+      source: { type: string; id: string; name: string };
+    }>(`/chunks/${chunkId}/neighbors?range=${range}`),
+
   /** Импорт акта из JSON */
   importJson: (data: { name: string; fullName: string; category: string; content: string }) =>
     apiFetch<{ law: LawInfo; chunksCount: number }>('/laws/import', {

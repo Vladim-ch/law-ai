@@ -14,7 +14,8 @@ import { parseDocumentText } from './document.js';
 
 import {
   indexDocument,
-  semanticSearch,
+  hybridSearch,
+  textSearch,
   type SearchResult,
 } from './rag.js';
 
@@ -151,7 +152,7 @@ export async function listLaws(prisma: PrismaClient): Promise<Law[]> {
 // ---------------------------------------------------------------------------
 
 /**
- * Семантический поиск по чанкам нормативных актов.
+ * Гибридный поиск по чанкам нормативных актов (семантика + триграммы).
  *
  * @param prisma — клиент Prisma
  * @param query — текст запроса на естественном языке
@@ -163,9 +164,30 @@ export async function searchLaws(
   query: string,
   limit?: number,
 ): Promise<SearchResult[]> {
-  return semanticSearch(prisma, {
+  return hybridSearch(prisma, {
     query,
     sourceType: 'law',
     limit,
+  });
+}
+
+/**
+ * Чисто текстовый поиск по чанкам НПА через pg_trgm (без эмбеддингов).
+ * Для точных запросов: "Статья 196", номер документа, точная фраза.
+ *
+ * @param prisma — клиент Prisma
+ * @param query — текст запроса
+ * @param limit — максимальное количество результатов (по умолчанию 20)
+ * @returns массив SearchResult с оценкой pg_trgm similarity
+ */
+export async function searchLawsText(
+  prisma: PrismaClient,
+  query: string,
+  limit?: number,
+): Promise<SearchResult[]> {
+  return textSearch(prisma, {
+    query,
+    sourceType: 'law',
+    limit: limit ?? 20,
   });
 }

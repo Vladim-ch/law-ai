@@ -9,7 +9,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 
-import { importLaw, indexLaw, listLaws, searchLaws } from '../services/law.js';
+import { importLaw, indexLaw, listLaws, searchLaws, searchLawsText } from '../services/law.js';
 import { parseDocumentText, ALLOWED_FILE_TYPES, isAllowedFileType } from '../services/document.js';
 
 // ---------------------------------------------------------------------------
@@ -45,7 +45,7 @@ const searchResponseSchema = z.object({
 /** Query-параметры поиска. */
 const searchQuerySchema = z.object({
   query: z.string().min(1, 'Поисковый запрос обязателен'),
-  limit: z.coerce.number().int().min(1).max(50).default(5),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
 });
 
 /** Тело запроса на импорт закона. */
@@ -133,6 +133,131 @@ const lawRoutes: FastifyPluginAsync = async (fastify) => {
           metadata: r.metadata,
           similarity: r.similarity,
         })),
+      });
+    },
+  });
+
+  // =========================================================================
+  // GET /laws/search/text — полнотекстовый поиск (pg_trgm, без эмбеддингов)
+  // =========================================================================
+  app.route({
+    method: 'GET',
+    url: '/laws/search/text',
+    schema: {
+      description: 'Полнотекстовый поиск по НПА через pg_trgm (без эмбеддингов). Для точных запросов: "Статья 196", номера документов.',
+      tags: ['laws'],
+      querystring: searchQuerySchema,
+      response: {
+        200: searchResponseSchema,
+        401: errorResponseSchema,
+      },
+    },
+    onRequest: [app.authenticate],
+    handler: async (request, reply) => {
+      const { query, limit } = request.query;
+
+      const results = await searchLawsText(app.prisma, query, limit);
+
+      return reply.status(200).send({
+        results: results.map((r) => ({
+          content: r.content,
+          metadata: r.metadata,
+          similarity: r.similarity,
+        })),
+      });
+    },
+  });
+
+  // =========================================================================
+  // GET /chunks/:id/neighbors — чанк + соседние (chunkIndex ± range)
+  // =========================================================================
+  app.route({
+    method: 'GET',
+    url: '/chunks/:id/neighbors',
+    schema: {
+      description: 'Возвращает чанк и его соседей по chunkIndex (± range) в рамках одного источника',
+      tags: ['laws'],
+      params: z.object({
+        id: z.string().uuid('Некорректный UUID чанка'),
+      }),
+      querystring: z.object({
+        range: z.coerce.number().int().min(1).max(10).default(2),
+      }),
+      response: {
+        200: z.object({
+          chunks: z.array(z.object({
+            chunkIndex: z.number(),
+            content: z.string(),
+          })),
+          source: z.object({
+            type: z.string(),
+            id: z.string(),
+            name: z.string(),
+          }),
+        }),
+        401: errorResponseSchema,
+        404: errorResponseSchema,
+      },
+    },
+    onRequest: [app.authenticate],
+    handler: async (request, reply) => {
+      const { id } = request.params;
+      const { range } = request.query;
+
+      // Находим запрошенный чанк
+      const chunk = await app.prisma.$queryRaw<
+        { sourceType: string; sourceId: string; chunkIndex: number }[]
+      >`
+        SELECT source_type AS "sourceType", source_id AS "sourceId", chunk_index AS "chunkIndex"
+        FROM chunks
+        WHERE id = ${id}::uuid
+        LIMIT 1
+      `;
+
+      if (chunk.length === 0) {
+        return reply.status(404).send({
+          error: 'NotFound',
+          message: 'Чанк не найден',
+        });
+      }
+
+      const { sourceType, sourceId, chunkIndex } = chunk[0]!;
+      const minIndex = chunkIndex - range;
+      const maxIndex = chunkIndex + range;
+
+      // Загружаем соседние чанки в диапазоне [chunkIndex - range, chunkIndex + range]
+      const neighbors = await app.prisma.$queryRaw<
+        { chunkIndex: number; content: string }[]
+      >`
+        SELECT chunk_index AS "chunkIndex", content
+        FROM chunks
+        WHERE source_id = ${sourceId}::uuid
+          AND source_type = ${sourceType}
+          AND chunk_index >= ${minIndex}
+          AND chunk_index <= ${maxIndex}
+        ORDER BY chunk_index ASC
+      `;
+
+      // Определяем название источника из метаданных или БД
+      let sourceName = 'Неизвестный источник';
+      if (sourceType === 'law') {
+        const law = await app.prisma.law.findUnique({
+          where: { id: sourceId },
+          select: { name: true },
+        });
+        if (law) sourceName = law.name;
+      }
+
+      return reply.status(200).send({
+        chunks: neighbors.map((n) => ({
+          chunkIndex: n.chunkIndex,
+          content: n.content,
+        })),
+        source: {
+          type: sourceType,
+          id: sourceId,
+          name: sourceName,
+        },
       });
     },
   });

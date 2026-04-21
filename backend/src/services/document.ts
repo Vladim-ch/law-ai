@@ -9,8 +9,11 @@
 import type { PrismaClient, Document } from '@prisma/client';
 import type { Client as MinioClient } from 'minio';
 import type OpenAI from 'openai';
+import { execFile } from 'node:child_process';
+import { writeFile, readFile, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import mammoth from 'mammoth';
-import { PDFParse } from 'pdf-parse';
 
 import { getSystemMessage } from '../lib/system-prompt.js';
 import { streamChat, chat } from '../lib/llm.js';
@@ -45,6 +48,41 @@ const MIME_MAP: Record<AllowedFileType, string> = {
 // ---------------------------------------------------------------------------
 
 /**
+ * Парсит PDF через системную утилиту pdftotext (poppler-utils).
+ *
+ * pdf-parse / pdfjs-dist не справляются с кириллицей в PDF с кастомными
+ * font encodings без ToUnicode CMap. pdftotext — самый надёжный вариант
+ * для русскоязычных документов.
+ *
+ * Работает через временный файл: buffer → tmp.pdf → pdftotext → tmp.txt → string.
+ */
+async function parsePdfWithPdftotext(buffer: Buffer): Promise<string> {
+  const tmpPath = join(tmpdir(), `pdf-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`);
+  const outPath = tmpPath.replace('.pdf', '.txt');
+
+  await writeFile(tmpPath, buffer);
+
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      execFile('pdftotext', ['-enc', 'UTF-8', '-layout', tmpPath, outPath], async (error) => {
+        if (error) {
+          reject(new Error(`pdftotext failed: ${error.message}`));
+          return;
+        }
+        try {
+          resolve(await readFile(outPath, 'utf-8'));
+        } catch (readErr) {
+          reject(readErr);
+        }
+      });
+    });
+  } finally {
+    await unlink(tmpPath).catch(() => {});
+    await unlink(outPath).catch(() => {});
+  }
+}
+
+/**
  * Извлекает чистый текст из буфера файла.
  *
  * @throws Error — если формат не поддерживается.
@@ -61,12 +99,8 @@ export async function parseDocumentText(
       return result.value;
     }
 
-    case 'pdf': {
-      const parser = new PDFParse({ data: buffer });
-      const result = await parser.getText();
-      await parser.destroy();
-      return result.text;
-    }
+    case 'pdf':
+      return parsePdfWithPdftotext(buffer);
 
     case 'txt':
     case 'rtf':

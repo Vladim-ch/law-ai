@@ -70,6 +70,7 @@ export interface LawInfo {
 
 /** Результат поиска по нормативной базе */
 export interface LawSearchResult {
+  chunkId?: string;
   content: string;
   metadata: Record<string, unknown>;
   similarity: number;
