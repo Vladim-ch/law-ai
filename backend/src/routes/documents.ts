@@ -19,6 +19,7 @@ import {
   getDocument,
   deleteDocument,
   analyzeDocumentMapReduce,
+  analyzeDocumentSync,
   summarizeDocument,
   type AnalysisEvent,
 } from '../services/document.js';
@@ -26,6 +27,7 @@ import {
   compareDocuments,
   analyzeComparison,
 } from '../services/compare.js';
+import { generateDocx } from '../lib/docx.js';
 
 // ---------------------------------------------------------------------------
 // Zod-схемы
@@ -500,6 +502,78 @@ const documentRoutes: FastifyPluginAsync = async (fastify) => {
 
       reply.raw.end();
       return reply;
+    },
+  });
+
+  // =========================================================================
+  // POST /documents/:id/analyze/docx — Анализ документа с экспортом в .docx
+  // =========================================================================
+  app.route({
+    method: 'POST',
+    url: '/documents/:id/analyze/docx',
+    schema: {
+      description: 'Анализ документа через LLM с возвратом результата в формате .docx',
+      tags: ['documents'],
+      params: documentParamsSchema,
+      body: z.object({
+        prompt: z.string().max(32_000).optional(),
+      }),
+      // Без response-схемы — возвращаем бинарный .docx файл
+    },
+    onRequest: [app.authenticate],
+    handler: async (request, reply) => {
+      const { userId } = request.user;
+      const { id } = request.params;
+      const { prompt: userPrompt } = request.body;
+
+      // Получаем документ с проверкой принадлежности пользователю
+      const document = await getDocument(app.prisma, id, userId);
+
+      if (!document) {
+        return reply.status(404).send({
+          error: 'NotFound',
+          message: 'Документ не найден',
+        });
+      }
+
+      if (!document.contentText) {
+        return reply.status(400).send({
+          error: 'BadRequest',
+          message: 'Текст документа не извлечён',
+        });
+      }
+
+      // Синхронный анализ через LLM (может занять 1-5 минут для больших документов)
+      const analysisText = await analyzeDocumentSync({
+        document,
+        userPrompt,
+      });
+
+      // Генерируем .docx из результата анализа
+      const title = `Анализ: ${document.filename}`;
+      const docxBuffer = await generateDocx(analysisText, title);
+
+      // Формируем имя файла: Анализ_{filename}_{date}.docx
+      const dateStr = new Date().toLocaleDateString('ru-RU', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+      }).replace(/\./g, '-');
+
+      const baseName = document.filename.replace(/\.[^.]+$/, '');
+      const exportFilename = `Анализ_${baseName}_${dateStr}.docx`;
+      const encodedFilename = encodeURIComponent(exportFilename);
+
+      return reply
+        .header(
+          'Content-Type',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        )
+        .header(
+          'Content-Disposition',
+          `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`,
+        )
+        .send(docxBuffer);
     },
   });
 

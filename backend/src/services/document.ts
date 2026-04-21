@@ -558,6 +558,112 @@ ${reducePrompt}`,
 }
 
 // ---------------------------------------------------------------------------
+// Синхронный анализ документа (для экспорта в .docx)
+// ---------------------------------------------------------------------------
+
+interface AnalyzeDocumentSyncParams {
+  document: Document;
+  userPrompt?: string;
+}
+
+/**
+ * Анализирует документ через LLM синхронно (без стриминга).
+ *
+ * Для коротких документов (≤ 30K символов) — один вызов chat().
+ * Для длинных — map-reduce: последовательный анализ чанков, затем синтез.
+ *
+ * Возвращает полный текст анализа.
+ */
+export async function analyzeDocumentSync(
+  params: AnalyzeDocumentSyncParams,
+): Promise<string> {
+  const { document, userPrompt } = params;
+  const contentText = document.contentText ?? '';
+
+  // Короткий документ — прямой анализ
+  if (contentText.length <= MAP_REDUCE_THRESHOLD) {
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      getSystemMessage(),
+      {
+        role: 'user',
+        content: `Проанализируй следующий юридический документ.
+
+Файл: ${document.filename} (${document.fileType})
+
+Текст документа:
+---
+${document.contentText}
+---
+
+${userPrompt || DEFAULT_ANALYSIS_PROMPT}`,
+      },
+    ];
+
+    return chat(messages);
+  }
+
+  // Длинный документ — map-reduce (синхронно)
+  const chunks = splitTextIntoChunks(contentText);
+  const totalChunks = chunks.length;
+
+  // Map-фаза: последовательный анализ каждого чанка
+  const chunkAnalyses: string[] = [];
+
+  for (let i = 0; i < totalChunks; i++) {
+    const chunkIndex = i + 1;
+
+    const chunkMessages: OpenAI.ChatCompletionMessageParam[] = [
+      getSystemMessage(),
+      {
+        role: 'user',
+        content: `Проанализируй фрагмент юридического документа "${document.filename}" (часть ${chunkIndex}/${totalChunks}).
+
+Фрагмент:
+---
+${chunks[i]}
+---
+
+Выдели из этого фрагмента:
+1. Ключевые условия (сроки, суммы, обязательства)
+2. Потенциальные риски
+3. Ссылки на нормативные акты (если упоминаются)
+4. Важные определения и термины
+
+Отвечай кратко и структурированно.`,
+      },
+    ];
+
+    const analysis = await chat(chunkMessages);
+    chunkAnalyses.push(analysis);
+  }
+
+  // Reduce-фаза: синтез итогового заключения
+  const reducePrompt = userPrompt || `Составь комплексный анализ:
+1. **Краткое резюме** — о чём документ, стороны, предмет
+2. **Ключевые условия** — сроки, суммы, обязательства, порядок расчётов
+3. **Потенциальные риски** — невыгодные условия, пробелы, несоответствия
+4. **Соответствие законодательству** — ссылки на нормативные акты РФ
+5. **Рекомендации** — что доработать`;
+
+  const reduceMessages: OpenAI.ChatCompletionMessageParam[] = [
+    getSystemMessage(),
+    {
+      role: 'user',
+      content: `На основе анализа ${totalChunks} фрагментов документа "${document.filename}" составь итоговое заключение.
+
+Промежуточные анализы:
+---
+${chunkAnalyses.join('\n\n---\n\n')}
+---
+
+${reducePrompt}`,
+    },
+  ];
+
+  return chat(reduceMessages);
+}
+
+// ---------------------------------------------------------------------------
 // Краткое резюме документа (синхронный ответ)
 // ---------------------------------------------------------------------------
 

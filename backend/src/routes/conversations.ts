@@ -17,6 +17,7 @@ import {
   sendMessage,
   deleteConversation,
 } from '../services/conversation.js';
+import { generateConversationDocx } from '../lib/docx.js';
 
 // ---------------------------------------------------------------------------
 // Zod-схемы
@@ -289,6 +290,79 @@ const conversationRoutes: FastifyPluginAsync = async (fastify) => {
 
       reply.raw.end();
       return reply;
+    },
+  });
+
+  // =========================================================================
+  // POST /conversations/:id/export/docx — Экспорт диалога в .docx
+  // =========================================================================
+  app.route({
+    method: 'POST',
+    url: '/conversations/:id/export/docx',
+    schema: {
+      description: 'Экспортировать диалог с AI-ассистентом в формате .docx',
+      tags: ['conversations'],
+      params: conversationParamsSchema,
+      // Без response-схемы — возвращаем бинарный .docx файл
+    },
+    onRequest: [app.authenticate],
+    handler: async (request, reply) => {
+      const { userId } = request.user;
+      const { id } = request.params;
+
+      const result = await getConversationWithMessages(app.prisma, id, userId);
+
+      if (!result) {
+        return reply.status(404).send({
+          error: 'NotFound',
+          message: 'Диалог не найден',
+        });
+      }
+
+      const { conversation, messages } = result;
+
+      // Фильтруем системные сообщения — в экспорт попадают только USER и ASSISTANT
+      const exportMessages = messages
+        .filter((m) => m.role === 'USER' || m.role === 'ASSISTANT')
+        .map((m) => ({
+          role: m.role as 'USER' | 'ASSISTANT',
+          content: m.content,
+        }));
+
+      if (exportMessages.length === 0) {
+        return reply.status(400).send({
+          error: 'BadRequest',
+          message: 'Диалог не содержит сообщений для экспорта',
+        });
+      }
+
+      // Генерируем .docx
+      const docxBuffer = await generateConversationDocx(
+        conversation.title,
+        conversation.createdAt,
+        exportMessages,
+      );
+
+      // Формируем имя файла
+      const dateStr = conversation.createdAt.toLocaleDateString('ru-RU', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+      }).replace(/\./g, '-');
+
+      const exportFilename = `Диалог_${dateStr}.docx`;
+      const encodedFilename = encodeURIComponent(exportFilename);
+
+      return reply
+        .header(
+          'Content-Type',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        )
+        .header(
+          'Content-Disposition',
+          `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`,
+        )
+        .send(docxBuffer);
     },
   });
 

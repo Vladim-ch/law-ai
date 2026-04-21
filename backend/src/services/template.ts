@@ -11,18 +11,12 @@
 
 import type { PrismaClient, Template } from '@prisma/client';
 import type OpenAI from 'openai';
-import {
-  Document as DocxDocument,
-  Packer,
-  Paragraph,
-  TextRun,
-  HeadingLevel,
-  AlignmentType,
-} from 'docx';
-
 import { getSystemMessage } from '../lib/system-prompt.js';
 import { streamChat, chat } from '../lib/llm.js';
 import { getDocument, parseDocumentText } from './document.js';
+
+// Re-export generateDocx для обратной совместимости (ранее определялся здесь)
+export { generateDocx } from '../lib/docx.js';
 
 // ---------------------------------------------------------------------------
 // Типы параметров шаблона
@@ -511,85 +505,6 @@ export function mergeWithDefaults(
   }
 
   return merged;
-}
-
-// ---------------------------------------------------------------------------
-// Генерация .docx
-// ---------------------------------------------------------------------------
-
-/** Размеры полей в twips (1 см = 567 twips). */
-const PAGE_MARGINS = {
-  top: 2 * 567,       // 2 см
-  bottom: 2 * 567,    // 2 см
-  left: 3 * 567,      // 3 см
-  right: 1.5 * 567,   // 1.5 см
-};
-
-/**
- * Генерирует .docx файл из заполненного текста.
- *
- * Формат:
- *   - Заголовок: название шаблона (Heading1, Times New Roman, 14pt)
- *   - Тело: абзацы через \n\n, Times New Roman 12pt
- *   - Поля страницы: ГОСТ Р 7.0.97-2016 (2/2/3/1.5 см)
- */
-export async function generateDocx(
-  filledText: string,
-  templateName: string,
-): Promise<Buffer> {
-  const paragraphs = filledText.split(/\n\n+/);
-
-  const children: Paragraph[] = [
-    // Заголовок документа
-    new Paragraph({
-      heading: HeadingLevel.HEADING_1,
-      alignment: AlignmentType.CENTER,
-      spacing: { after: 240 },
-      children: [
-        new TextRun({
-          text: templateName,
-          font: 'Times New Roman',
-          size: 28, // 14pt (размер в полупунктах)
-          bold: true,
-        }),
-      ],
-    }),
-  ];
-
-  // Тело документа — каждый абзац как Paragraph
-  for (const text of paragraphs) {
-    const trimmed = text.trim();
-    if (!trimmed) continue;
-
-    children.push(
-      new Paragraph({
-        spacing: { after: 120 },
-        children: [
-          new TextRun({
-            text: trimmed,
-            font: 'Times New Roman',
-            size: 24, // 12pt
-          }),
-        ],
-      }),
-    );
-  }
-
-  const doc = new DocxDocument({
-    sections: [
-      {
-        properties: {
-          page: {
-            margin: PAGE_MARGINS,
-          },
-        },
-        children,
-      },
-    ],
-  });
-
-  const buffer = await Packer.toBuffer(doc);
-  return Buffer.from(buffer);
 }
 
 // ---------------------------------------------------------------------------
