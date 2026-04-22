@@ -39,9 +39,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       </div>
 
       {/* Содержимое */}
-      <div className={`max-w-[75%] ${isUser ? 'text-right' : 'text-left'}`}>
+      <div className={`min-w-0 max-w-[75%] ${isUser ? 'text-right' : 'text-left'}`}>
         <div
-          className={`inline-block rounded-2xl px-4 py-3 ${
+          className={`inline-block max-w-full overflow-hidden rounded-2xl px-4 py-3 ${
             isUser
               ? 'rounded-tr-sm bg-brand-600/20 text-gray-200'
               : 'rounded-tl-sm bg-surface-tertiary text-gray-300'

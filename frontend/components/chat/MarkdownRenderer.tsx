@@ -68,27 +68,26 @@ const components: Components = {
     </a>
   ),
   code: ({ children, className }) => {
-    // Определяем, является ли это блочным code (с указанием языка)
-    const isBlock = className?.startsWith('language-');
+    // Inline code: нет className и контент — простая строка без переносов
+    const isInline =
+      !className && typeof children === 'string' && !children.includes('\n');
 
-    if (isBlock) {
+    if (isInline) {
       return (
-        <code
-          className={`block overflow-x-auto rounded-lg bg-surface p-4 font-mono text-sm text-gray-200 ${className || ''}`}
-        >
+        <code className="rounded bg-surface-elevated px-1.5 py-0.5 font-mono text-sm text-brand-300">
           {children}
         </code>
       );
     }
 
-    // Инлайновый код
-    return (
-      <code className="rounded bg-surface-elevated px-1.5 py-0.5 font-mono text-sm text-brand-300">
-        {children}
-      </code>
-    );
+    // Блочный код — стили на <pre>, code прозрачный
+    return <code className={className || ''}>{children}</code>;
   },
-  pre: ({ children }) => <pre className="mb-3">{children}</pre>,
+  pre: ({ children }) => (
+    <pre className="mb-3 max-w-full overflow-x-auto rounded-lg bg-surface p-4 font-mono text-sm text-gray-200">
+      {children}
+    </pre>
+  ),
   hr: () => <hr className="my-4 border-surface-elevated" />,
   strong: ({ children }) => (
     <strong className="font-semibold text-gray-200">{children}</strong>

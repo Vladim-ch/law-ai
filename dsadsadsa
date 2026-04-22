@@ -1,0 +1,769 @@
+[33mcommit d599918c5435f44ece91c4fa963e40efe56b6a34[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Tue Apr 21 08:53:13 2026 +0800
+
+    [backend-developer] feat: автоиндексация документов в RAG + умный поиск
+    
+    Загруженные документы автоматически индексируются в pgvector.
+    RAG-поиск фильтрует по userId и активируется только для
+    юридических вопросов.
+    
+    - services/document.ts: автоиндексация при upload (fire-and-forget,
+      не блокирует ответ), удаление чанков при deleteDocument
+    - services/rag.ts: фильтр userId в semanticSearch/hybridSearch —
+      документы только свои, НПА общие для всех
+    - services/conversation.ts: shouldUseRAG() — эвристики (длина ≥20,
+      стоп-фразы, 30 юридических маркеров). RAG не запускается
+      на "привет"/"спасибо", экономит 2-5 сек на CPU
+    
+    Результат: юрист загрузил 50 договоров → может спросить в чате
+    "в каких договорах пеня выше 0.5%" → RAG найдёт релевантные фрагменты.
+    
+    Co-Authored-By: backend-developer <backend-developer@agents.law-ai.local>
+
+[33mcommit feaacf94c9db01b87dbbaf7542db51d4b345f8c8[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Mon Apr 20 16:43:34 2026 +0800
+
+    feat: создание шаблонов из готового документа (AI-извлечение параметров)
+    
+    Юрист загружает договор → LLM анализирует текст, находит параметры
+    (имена, суммы, даты, сроки), заменяет на {{плейсхолдеры}} → шаблон.
+    
+    Backend:
+    - services/template.ts: extractTemplateFromDocument, extractTemplateFromFile,
+      промпт для LLM (temperature 0.1), robust JSON parser (прямой парсинг,
+      markdown code-блок, regex поиск JSON)
+    - routes/templates.ts: POST /templates/from-document (по documentId),
+      POST /templates/from-file (multipart загрузка)
+    
+    Frontend:
+    - components/templates/TemplateCreator.tsx: 4-шаговый wizard:
+      1. Загрузка документа + название + категория
+      2. Редактирование параметров (label, type, required, удаление, добавление)
+      3. Превью side-by-side (два листа Word, плейсхолдеры подсвечены индиго)
+      4. Сохранение через POST /templates
+    - TemplatesPage.tsx: три режима (list/fill/create)
+    - lib/api.ts: templates.extractFromFile(), templates.create()
+    - lib/types.ts: ExtractedParameter, ExtractedTemplate
+    
+    Co-Authored-By: backend-developer <backend-developer@agents.law-ai.local>
+    Co-Authored-By: frontend-ui-developer <frontend-ui-developer@agents.law-ai.local>
+
+[33mcommit 777589b22b2c98387a2928c60d22878d080985f9[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Mon Apr 20 15:35:31 2026 +0800
+
+    [frontend-ui-developer] feat: страница "Сравнение" — side-by-side diff в стиле Word
+    
+    UI для семантического сравнения документов: выбор двух файлов,
+    результат в виде двух «листов бумаги» с подсветкой изменений.
+    
+    - components/compare/ComparePage.tsx: два состояния — выбор документов
+      (dropdown + загрузка) и результат сравнения
+    - components/compare/DocumentSelector.tsx: выбор из загруженных или
+      upload нового файла
+    - components/compare/CompareResult.tsx: side-by-side два листа в стиле
+      Word (белый фон, Times New Roman, тени, поля). Подсветка: красный =
+      удалено, зелёный = добавлено, жёлтый = изменено, синий badge =
+      перемещён. Inline diff слово-за-словом
+    - components/compare/DiffBlock.tsx: компоненты отдельных блоков diff
+    - Sidebar.tsx: четвёртый таб "Сравнение" (ArrowLeftRight)
+    - stores/app.ts: activeSection += 'compare'
+    - lib/api.ts: documents.compare()
+    - lib/types.ts: InlineDiff, MatchedParagraph, ModifiedParagraph,
+      CompareStats, CompareResult
+    
+    Co-Authored-By: frontend-ui-developer <frontend-ui-developer@agents.law-ai.local>
+
+[33mcommit 39acc988eac114b1f8437a70f64578ab4c2eeb1d[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Mon Apr 20 14:59:37 2026 +0800
+
+    [backend-developer] feat: семантическое сравнение документов (diff + LLM-анализ)
+    
+    Сопоставление абзацев по смыслу (trigram similarity), а не по позиции —
+    корректно работает при перестановке разделов.
+    
+    - src/services/compare.ts: trigram similarity в JS (без roundtrip к БД),
+      greedy matching абзацев (≥0.85 matched, 0.5-0.85 modified, <0.5 added/removed),
+      inline diff через LCS (слово-за-словом), обнаружение перемещений
+    - src/routes/documents.ts:
+      POST /documents/compare — структурный diff (JSON): matched, modified
+      с inline diff, added, removed, stats
+      POST /documents/compare/analyze — LLM-анализ отличий (SSE):
+      юридически значимые изменения, новые риски, ключевые условия
+    
+    Протестировано: перестановка разделов, изменение сумм/сроков, новый раздел —
+    всё обнаружено корректно.
+    
+    Co-Authored-By: backend-developer <backend-developer@agents.law-ai.local>
+
+[33mcommit 9eb4da85032269573169fa2226ef02490dc0b97a[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Mon Apr 20 14:37:02 2026 +0800
+
+    [backend-developer] feat: RAG-контекст в чат + fix потери текста при обрыве стриминга
+    
+    Backend:
+    - services/conversation.ts: автоматический RAG-поиск при каждом
+      сообщении (top-5 чанков, similarity ≥ 0.5, лимит 10К символов).
+      Контекст вставляется как system-сообщение перед user message.
+      Best-effort: при ошибке RAG чат работает без контекста
+    - lib/system-prompt.ts: инструкция использовать контекст из
+      нормативной базы, цитировать статьи
+    
+    Frontend:
+    - stores/chat.ts: при обрыве SSE-потока (error/catch) накопленный
+      текст сохраняется как сообщение с пометкой "(ответ прерван)"
+      вместо потери. Ранее catch сбрасывал streamingContent без
+      сохранения — пузырёк пропадал
+    
+    Co-Authored-By: backend-developer <backend-developer@agents.law-ai.local>
+
+[33mcommit b56e38d69d598e04542f104fbe73ae68a631cc41[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Mon Apr 20 13:48:42 2026 +0800
+
+    [frontend-ui-developer] feat: страница "База НПА" — поиск, список, загрузка файлов
+    
+    Юристы загружают .docx/.pdf/.txt нормативных актов и ищут по ним.
+    
+    - components/laws/LawsPage.tsx: три блока на одной странице:
+      1. Поиск (семантический, similarity в %, цветовая индикация)
+      2. Список загруженных актов (name, category, кол-во фрагментов)
+      3. Форма загрузки: drag-and-drop, name/fullName/category, спиннер
+    - Sidebar.tsx: третий таб "НПА" (BookOpen)
+    - app/page.tsx: рендер LawsPage при activeSection='laws'
+    - stores/app.ts: activeSection += 'laws'
+    - lib/api.ts: laws.list/search/importFile/importJson
+    - lib/types.ts: LawInfo, LawSearchResult
+    - routes/laws.ts: убрана проверка ADMIN для импорта (MVP —
+      юристы загружают сами, RBAC в Фазе 4)
+    
+    Co-Authored-By: frontend-ui-developer <frontend-ui-developer@agents.law-ai.local>
+
+[33mcommit cea0d5d05972300d672b8d5da1ce6ad912bddde5[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Mon Apr 20 11:31:17 2026 +0800
+
+    [backend-developer] feat: импорт нормативной базы — модель Law, скрипт, API (.docx/.pdf/.txt)
+    
+    - prisma/schema.prisma: модель Law (name unique, fullName, category,
+      content, chunksCount). Миграция add_laws_table
+    - services/law.ts: importLaw (upsert), importLawFromFile (поддержка
+      .docx/.pdf/.txt/.rtf через parseDocumentText), indexLaw, searchLaws
+    - routes/laws.ts: GET /laws, GET /laws/search?query= (семантический),
+      POST /laws/import (JSON, ADMIN), POST /laws/import/file (multipart, ADMIN)
+    - scripts/import-laws.ts: массовый импорт из data/laws/manifest.json
+    - data/laws/: демо-файл sample-gk-rf-196.txt + manifest.json
+    - README.md: инструкция по импорту (скрипт + API + multipart)
+    
+    Протестировано: импорт → эмбеддинг → поиск "срок исковой давности" → 0.814 similarity.
+    
+    Co-Authored-By: backend-developer <backend-developer@agents.law-ai.local>
+
+[33mcommit 7ab45664d66e217b92482a0c5dcd01ed780f616d[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Mon Apr 20 11:00:35 2026 +0800
+
+    [backend-developer] feat: RAG-инфраструктура — чанки, эмбеддинги, pgvector поиск
+    
+    Фундамент для семантического поиска по нормативной базе и документам.
+    
+    - prisma/schema.prisma: модель Chunk (sourceType, sourceId, chunkIndex,
+      content, embedding vector(768), metadata JSONB). Индекс по (source_type, source_id)
+    - migrations/add_chunks_table: таблица chunks + ivfflat vector-индекс
+      (cosine distance, lists=100)
+    - src/lib/embeddings.ts: generateEmbedding и generateEmbeddings
+      через OpenAI SDK → Ollama (модель nomic-embed-text, 768 dim)
+    - src/services/rag.ts: splitIntoChunks (по абзацам, ~1000 символов,
+      overlap 200), indexDocument (батчи по 10, raw SQL INSERT с vector),
+      deleteChunks, semanticSearch (cosine <=>), hybridSearch (70% cosine
+      + 30% pg_trgm similarity)
+    - src/plugins/embedding.ts: проверка модели при старте, декораторы
+    - .env.example: EMBEDDING_MODEL, EMBEDDING_DIMENSIONS
+    - docker-compose.yml: env для backend + nomic-embed-text в ollama-init
+    - docker/db/init.sql: ivfflat vector-индекс
+    
+    Co-Authored-By: backend-developer <backend-developer@agents.law-ai.local>
+
+[33mcommit 74d05f5f776f2027718eadbe620c0c5b3c575e75[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Mon Apr 20 10:19:13 2026 +0800
+
+    [frontend-ui-developer] feat: страница "Шаблоны" — форма, превью, скачивание .docx
+    
+    Навигация Диалоги ↔ Шаблоны через табы в Sidebar (Zustand activeSection).
+    
+    - components/templates/TemplatesPage.tsx: контейнер (список ↔ форма)
+    - components/templates/TemplateList.tsx: grid-карточки шаблонов
+      с категорией, количеством параметров, skeleton-лоадерами
+    - components/templates/TemplateForm.tsx: форма заполнения параметров
+      (string→input, date→date, text→textarea), валидация required,
+      кнопки "Предпросмотр" и "Скачать .docx"
+    - components/templates/TemplatePreview.tsx: модальное окно
+      с заполненным текстом документа
+    - Sidebar.tsx: табы Диалоги/Шаблоны, список диалогов скрывается
+      при переходе в шаблоны
+    - app/page.tsx: условный рендер ChatWindow или TemplatesPage
+    - lib/api.ts: templates.list/get/generate/downloadDocx
+    - lib/types.ts: TemplateParam, TemplateInfo, Template
+    - stores/app.ts: activeSection + setActiveSection
+    
+    Co-Authored-By: frontend-ui-developer <frontend-ui-developer@agents.law-ai.local>
+
+[33mcommit 1e6efb219f21e1c5efd3450c8aeae17a1d0982c9[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Mon Apr 20 08:18:38 2026 +0800
+
+    [backend-developer] feat: шаблоны договоров — CRUD, генерация .docx, LLM-доработка
+    
+    3 предустановленных шаблона (seed): договор оказания услуг, NDA,
+    договор поставки. Реалистичные юридические тексты со ссылками на ГК РФ.
+    
+    - src/services/template.ts: seedDefaultTemplates (идемпотентный),
+      fillTemplate (замена {{key}} → значение), generateDocx (Times New Roman,
+      ГОСТ Р 7.0.97-2016 поля), generateWithLLM (LLM доработка)
+    - src/routes/templates.ts: 7 эндпоинтов:
+      GET /templates — список с фильтром по category
+      GET /templates/:id — детали с templateBody
+      POST /templates/:id/generate — заполнение параметрами → текст
+      POST /templates/:id/generate/docx — заполнение → скачать .docx
+      POST /templates/:id/generate/ai — LLM доработка (SSE)
+      POST /templates — создать шаблон (ADMIN/LAWYER)
+      DELETE /templates/:id — удалить (создатель/ADMIN)
+    - plugins/prisma.ts: seed шаблонов при старте
+    - Новая зависимость: docx
+    
+    Co-Authored-By: backend-developer <backend-developer@agents.law-ai.local>
+
+[33mcommit bf4986a31d1b849f9f1468c1ab47f1bb623bb290[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 16:50:00 2026 +0800
+
+    feat: map-reduce анализ больших документов + documentId в чат
+    
+    Документы юристов (20-60 страниц) не помещаются в контекст LLM целиком.
+    Два изменения решают это:
+    
+    Backend:
+    - services/document.ts: map-reduce для документов > 30К символов.
+      Разбивка на чанки ~8К по абзацам, анализ каждого через chat(),
+      финальный синтез через streamChat(). SSE-события: chunk_progress,
+      chunk_done, reduce_start. Документы ≤ 30К — прямой анализ (direct)
+    - services/conversation.ts: sendMessage принимает documentId,
+      подгружает contentText из БД, вставляет как system-сообщение
+      в LLM-контекст. Текст не хранится в messages — только метаданные
+      в attachments (JSONB)
+    - routes/conversations.ts: body += documentId: z.uuid().optional()
+    
+    Frontend:
+    - stores/chat.ts: при загрузке файла отправляет documentId вместо
+      текста. В чате видно только заголовок + запрос пользователя
+    - lib/api.ts: sendMessage принимает documentId
+    
+    Co-Authored-By: backend-developer <backend-developer@agents.law-ai.local>
+
+[33mcommit 06c30c915d98f34cc147ddba796503617b0b0aee[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 15:42:03 2026 +0800
+
+    [backend-developer] feat: анализ документов через LLM (SSE + резюме)
+    
+    Два новых эндпоинта для анализа загруженных документов.
+    
+    - POST /documents/:id/analyze — SSE-стриминг комплексного анализа:
+      резюме, ключевые условия, риски, соответствие законодательству РФ,
+      рекомендации. Принимает опциональный кастомный prompt.
+      CORS-заголовки для reply.raw. Events: analysis_start/token/analysis_end
+    - POST /documents/:id/summarize — JSON-ответ с кратким резюме (3-5
+      предложений), синхронный вызов chat(). Полезен для quick preview
+    - services/document.ts: analyzeDocument (stream) и summarizeDocument
+      (sync), формирование промпта с контекстом документа
+    
+    Co-Authored-By: backend-developer <backend-developer@agents.law-ai.local>
+
+[33mcommit 14690e9333c4ef98e9324cf43de0d3581c417007[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 15:36:36 2026 +0800
+
+    [frontend-ui-developer] feat: загрузка документов в чат (UI + интеграция с LLM)
+    
+    - components/chat/FilePreview.tsx: превью прикреплённого файла (иконка,
+      имя, размер, кнопка удаления, спиннер при загрузке)
+    - components/chat/MessageInput.tsx: кнопка Paperclip для прикрепления
+      файла (.docx/.pdf/.txt/.rtf, до 50 МБ), валидация типа и размера,
+      FilePreview над textarea
+    - stores/chat.ts: sendMessage принимает file?: File, загружает через
+      documents.upload(), формирует сообщение с контекстом документа
+      (contentText до 10000 символов) + дефолтный промпт анализа
+    - lib/api.ts: методы documents (upload/list/get/delete/downloadUrl),
+      константы ALLOWED_FILE_TYPES, MAX_FILE_SIZE
+    - lib/types.ts: интерфейсы DocumentInfo и Document
+    
+    Co-Authored-By: frontend-ui-developer <frontend-ui-developer@agents.law-ai.local>
+
+[33mcommit 2c5a7cff85b9436061b53524c8f9e1bf462c8b9a[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 15:31:47 2026 +0800
+
+    [backend-developer] feat: загрузка и парсинг документов (MinIO + docx/pdf/txt)
+    
+    5 эндпоинтов для работы с юридическими документами, все защищены JWT.
+    
+    - src/services/document.ts: парсинг .docx (mammoth), .pdf (pdf-parse),
+      .txt/.rtf (utf-8). Загрузка в MinIO, сохранение в БД. Парсинг
+      best-effort: при ошибке документ сохраняется с contentText=null
+    - src/routes/documents.ts:
+      POST /documents/upload (multipart/form-data) — загрузка + парсинг (201)
+      GET /documents — список документов пользователя с пагинацией (200)
+      GET /documents/:id — детали документа с текстом (200)
+      DELETE /documents/:id — удаление из MinIO + БД (204)
+      GET /documents/:id/download — стриминг оригинала из MinIO (200)
+    - src/server.ts: регистрация @fastify/multipart (лимит MAX_UPLOAD_SIZE)
+      и document routes
+    - Новые зависимости: @fastify/multipart, mammoth, pdf-parse
+    
+    Typecheck: 0 ошибок.
+    
+    Co-Authored-By: backend-developer <backend-developer@agents.law-ai.local>
+
+[33mcommit c290e65d93ce626cd008d50cbdff5f93f5b5cae0[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 15:26:33 2026 +0800
+
+    [docker-deploy] feat: автоприменение Prisma-миграций при старте backend
+    
+    - backend/docker-entrypoint.sh: выполняет prisma migrate deploy
+      перед запуском node. Если миграций нет — отрабатывает мгновенно.
+      exec передаёт PID 1 процессу node (корректный graceful shutdown)
+    - backend/Dockerfile: ENTRYPOINT вместо CMD, копирование prisma/migrations/
+      из build-стадии (ранее копировался только schema.prisma)
+    
+    Co-Authored-By: docker-deploy <docker-deploy@agents.law-ai.local>
+
+[33mcommit 556c29de39b62a3d8b3602a5da2e47ba0a17922d[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 15:00:28 2026 +0800
+
+    [llm-engineer] fix: документы форматируются Markdown, а не code-блоками
+    
+    - system-prompt.ts: убрана инструкция "оформляй документы в блоках кода".
+      Проекты договоров/NDA теперь используют обычное Markdown-форматирование
+      (заголовки, списки, жирный текст), что выглядит естественнее в чат-интерфейсе
+    
+    Co-Authored-By: llm-engineer <llm-engineer@agents.law-ai.local>
+
+[33mcommit 84c0abf7fb15ecace84b83f6a7c270cda07688ac[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 14:29:19 2026 +0800
+
+    fix: CORS-заголовки для SSE-стриминга (reply.raw обходит Fastify)
+    
+    - routes/conversations.ts: reply.raw.writeHead() обходит Fastify-хуки,
+      включая @fastify/cors. Добавлены Access-Control-Allow-Origin и
+      Access-Control-Allow-Credentials вручную в SSE-заголовки.
+      Без этого браузер блокировал SSE-поток как cross-origin
+    
+    Co-Authored-By: Claude <noreply@anthropic.com>
+
+[33mcommit a232667b07678f4613310f4f6b416eadcb8cea3b[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 14:06:26 2026 +0800
+
+    fix: CORS methods (DELETE/PUT/PATCH) + кнопка удаления + Content-Type
+    
+    Три связанных бага, блокировавших удаление диалогов:
+    
+    - backend/src/server.ts: CORS methods явно включают DELETE, PUT, PATCH,
+      OPTIONS (по умолчанию @fastify/cors отдавал только GET,HEAD,POST)
+    - frontend/lib/api.ts: Content-Type: application/json ставится только
+      при наличии body — DELETE без тела + этот заголовок вызывал 400
+      в Fastify ("Body cannot be empty when content-type is set to json")
+    - frontend/components/layout/Sidebar.tsx: кнопка удаления —
+      вложенный <button> заменён на <div> (невалидный HTML),
+      кнопка всегда видна (убран opacity-0/group-hover)
+    
+    Co-Authored-By: Claude <noreply@anthropic.com>
+
+[33mcommit 30321249a77fabac0900aca45778e4f24a2363b8[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 13:48:40 2026 +0800
+
+    fix: кнопка "Новый диалог" теперь создаёт диалог через API
+    
+    - Sidebar.tsx: handleNewChat вызывал clearCurrentConversation() (сброс),
+      заменён на createConversation() (POST /conversations)
+    
+    Co-Authored-By: Claude <noreply@anthropic.com>
+
+[33mcommit 1dce45a603a66a76527277d95ed3ea7336a774a1[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 13:22:17 2026 +0800
+
+    fix: CORS для cross-origin запросов frontend → backend
+    
+    - Установлен @fastify/cors, зарегистрирован в server.ts
+      (origin: true, credentials: true). Без CORS фронтенд на порту 3100
+      не мог обращаться к backend на порту 4000 (cross-origin)
+    
+    Co-Authored-By: Claude <noreply@anthropic.com>
+
+[33mcommit 6a0347133ba1fe38cf49e73b259686a5be9c9108[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 13:13:21 2026 +0800
+
+    fix: исправления сборки frontend и healthcheck ollama
+    
+    - frontend/next.config.ts → next.config.mjs: Next.js 14.2 не поддерживает
+      конфигурацию через .ts файлы, только .js/.mjs
+    - frontend/.eslintrc.json: убрано правило @typescript-eslint/no-unused-vars —
+      плагин @typescript-eslint не установлен как прямая зависимость
+    - docker-compose.yml: healthcheck ollama заменён с wget (не установлен
+      в образе ollama/ollama) на ollama list (встроенная CLI-команда)
+    
+    Co-Authored-By: Claude <noreply@anthropic.com>
+
+[33mcommit 89a3be88f327f8bdc6c6e52681bdd5b4927276f0[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 11:55:48 2026 +0800
+
+    chore: порты на 0.0.0.0 (доступ из локалки), frontend на 3100
+    
+    - docker-compose.yml: убрана привязка 127.0.0.1 у всех сервисов —
+      порты доступны из локальной сети для dev-тестирования.
+      Frontend: хостовый порт 3100 (3000 занят другим проектом),
+      внутренний порт контейнера остаётся 3000
+    - .env.example: комментарий о замене localhost на IP сервера
+      для NEXT_PUBLIC_API_URL при тестировании из локалки
+    
+    Co-Authored-By: Claude <noreply@anthropic.com>
+
+[33mcommit d86b13d37f9fe23f058c40ca8c0a1c8292c3c821[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 11:50:49 2026 +0800
+
+    [frontend-ui-developer] feat: чат-интерфейс с SSE-стримингом, авторизация, Markdown
+    
+    Полноценный UI для MVP: авторизация, список диалогов, чат с LLM.
+    
+    - app/login/page.tsx, app/register/page.tsx: формы входа и регистрации,
+      тёмная тема, редиректы
+    - components/providers/AuthProvider.tsx: проверка токена через /auth/me,
+      защита маршрутов, localStorage persistence
+    - stores/auth.ts: Zustand store (login, register, logout, checkAuth)
+    - stores/chat.ts: Zustand store (conversations CRUD, sendMessage
+      с SSE-стримингом через fetch + ReadableStream, parseSSEChunk)
+    - components/chat/ChatWindow.tsx: окно чата с автоскроллом,
+      приветственный экран при пустом диалоге
+    - components/chat/MessageBubble.tsx: user справа, assistant слева
+    - components/chat/StreamingBubble.tsx: стримящийся ответ с курсором
+    - components/chat/MessageInput.tsx: textarea с авто-ростом,
+      Enter отправка, Shift+Enter перенос, блокировка при стриминге
+    - components/chat/MarkdownRenderer.tsx: react-markdown + remark-gfm,
+      стили для таблиц, code, blockquote, списков
+    - components/layout/Sidebar.tsx: реальный список диалогов, создание,
+      удаление, профиль пользователя, кнопка выхода
+    - components/layout/LayoutShell.tsx: условный Sidebar (без на auth-страницах)
+    - lib/api.ts: полноценный API-клиент с auth и conversations методами
+    - lib/types.ts: User, Conversation, Message, SSEEvent
+    
+    Новые зависимости: react-markdown, remark-gfm.
+    Typecheck: 0 ошибок.
+    
+    Co-Authored-By: frontend-ui-developer <frontend-ui-developer@agents.law-ai.local>
+
+[33mcommit 9788cc92fa4e5dc24d732ebb66c0ffd20af528c6[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 11:42:12 2026 +0800
+
+    [backend-developer] feat: API чата с SSE-стримингом ответов LLM
+    
+    5 эндпоинтов для работы с диалогами, все защищены JWT.
+    SSE-стриминг ответов LLM через reply.raw + async generator.
+    
+    - src/routes/conversations.ts:
+      POST /conversations — создать диалог (201)
+      GET /conversations — список диалогов пользователя с пагинацией (200)
+      GET /conversations/:id — диалог с сообщениями (200)
+      POST /conversations/:id/messages — отправить сообщение, ответ LLM
+      через SSE (message_start → token* → message_end/error)
+      DELETE /conversations/:id — удалить диалог с сообщениями (204)
+    - src/services/conversation.ts: бизнес-логика, формирование контекста
+      LLM (системный промпт + вся история), маппинг Prisma → OpenAI,
+      сохранение user/assistant messages, обновление updatedAt
+    - Авторизация: проверка conversation.userId === request.user.userId;
+      чужие диалоги возвращают 404 (не 403 — защита от enumeration)
+    - Контекст LLM: [systemPrompt, ...allMessages] без truncation (MVP)
+    
+    Typecheck: 0 ошибок.
+    
+    Co-Authored-By: backend-developer <backend-developer@agents.law-ai.local>
+
+[33mcommit 9f5fcb6ed5b177ab518ca01d16da24b27e077e7d[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 11:24:54 2026 +0800
+
+    [llm-engineer] feat: системный промпт юриста РФ + LLM-клиент (OpenAI SDK → Ollama)
+    
+    - src/lib/system-prompt.ts: системный промпт юридического ассистента РФ.
+      Роль, юрисдикция, целевая аудитория (профессиональные юристы),
+      обязательные ссылки на нормативные акты (ст., п., ФЗ), дисклеймер,
+      Markdown-форматирование, 9 приоритетных отраслей права
+      (ГК, ТК, НК, корпоративное, АПК, КоАП, 152-ФЗ, 44-ФЗ/223-ФЗ, 135-ФЗ)
+    - src/lib/llm.ts: OpenAI SDK клиент с baseURL из LLM_BASE_URL.
+      Обёртки streamChat() (async generator для SSE) и chat() (синхронный).
+      Параметры: temperature 0.3 (точность > креативность), max_tokens 4096
+    - src/plugins/llm.ts: Fastify-плагин, декоратор app.llm/streamChat/chat,
+      health-check через llm.models.list() при старте (warning, не fatal)
+    - Новая зависимость: openai ^6.34.0
+    
+    Typecheck: 0 ошибок.
+    
+    Co-Authored-By: llm-engineer <llm-engineer@agents.law-ai.local>
+
+[33mcommit 00f55b6f212d3c3da8b9ea6be1f95b2bb1d43670[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 10:14:55 2026 +0800
+
+    [docker-deploy] feat: Ollama LLM-сервер в compose, замена Anthropic → LLM
+    
+    Переход с Claude API на self-hosted Ollama. API совместим с OpenAI SDK —
+    backend переключается на другого LLM-провайдера сменой трёх переменных.
+    
+    - docker-compose.yml: сервис ollama (ollama/ollama:latest), volume
+      ollama-data, healthcheck, порт 127.0.0.1:11434. Закомментированный
+      блок GPU deploy (раскомментировать при переезде на RTX 4090,
+      нужен nvidia-container-toolkit). ollama-init (профиль init) для
+      скачивания модели. Backend зависит от ollama (service_healthy)
+    - .env.example: секция Anthropic заменена на LLM (LLM_BASE_URL,
+      LLM_MODEL=qwen2.5:7b, LLM_API_KEY=ollama). Комментарии: как
+      переключиться на GPU-модель, как переключиться на OpenAI/Claude
+    - backend/src/config/env.ts: ANTHROPIC_API_KEY/MODEL → LLM_BASE_URL
+      (z.url()), LLM_MODEL, LLM_API_KEY
+    
+    Co-Authored-By: docker-deploy <docker-deploy@agents.law-ai.local>
+
+[33mcommit da3c1f741d7ff5b4d01c860dc7101ce1a53f1af2[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 09:47:54 2026 +0800
+
+    [backend-developer] feat: JWT-аутентификация (register, login, /auth/me)
+    
+    - src/plugins/jwt.ts: @fastify/jwt плагин, секрет из JWT_SECRET,
+      декоратор app.authenticate (onRequest-хук), типизация JwtPayload
+      (userId + role), declare module для FastifyInstance и FastifyJWT
+    - src/services/auth.ts: bcrypt hash (12 rounds), createUser с обработкой
+      duplicate email (P2002 → 409), authenticateUser с защитой от user
+      enumeration (единое сообщение "Неверный email или пароль")
+    - src/routes/auth.ts: POST /auth/register (201), POST /auth/login (200/401),
+      GET /auth/me (200/401, требует Bearer token). Zod-валидация body/response,
+      sanitizeUser — passwordHash никогда не возвращается клиенту
+    - Новые зависимости: @fastify/jwt ^9.1.0, bcrypt ^6.0.0, fastify-plugin ^5.1.0
+    - JWT payload минимальный: {userId, role} — при смене профиля не нужен
+      перевыпуск токена
+    
+    Co-Authored-By: backend-developer <backend-developer@agents.law-ai.local>
+
+[33mcommit 7038d227d934dda83ae09eae149d99a223a2192c[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 09:32:31 2026 +0800
+
+    [backend-developer] feat: расширенный /health с проверками Postgres, Redis, MinIO
+    
+    Плагины подключения к внешним сервисам + полноценный readiness-эндпоинт.
+    
+    - src/plugins/prisma.ts: PrismaClient, $connect при старте (fail fast),
+      $disconnect при shutdown, declare module для app.prisma
+    - src/plugins/redis.ts: ioredis, ping при старте, quit при shutdown,
+      declare module для app.redis
+    - src/plugins/minio.ts: minio.Client, проверка/создание бакета при старте,
+      declare module для app.minio
+    - src/routes/health.ts: параллельные проверки (Promise.all) с таймаутом
+      3с на каждую. Postgres — SELECT 1, Redis — ping/PONG, MinIO —
+      bucketExists. Статус ok/degraded/error, HTTP 200 или 503,
+      latencyMs для каждой проверки
+    - src/server.ts: регистрация плагинов prisma, redis, minio
+    - Новые зависимости: ioredis ^5.10.1, minio ^8.0.7, fastify-plugin ^5.1.0
+    
+    Smoke-test: compose up → GET /health → status "ok", latency 2-3мс.
+    
+    Co-Authored-By: backend-developer <backend-developer@agents.law-ai.local>
+
+[33mcommit 3d675cdfe60cb40b69de289f908535fbd4e803fd[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 08:51:15 2026 +0800
+
+    [backend-developer] feat: модели данных Prisma (7 сущностей) и первая миграция
+    
+    Модели строго по ТЗ §5: User, Conversation, Message, Document,
+    Template, Task, KnowledgeBase. Первая миграция создана и проверена.
+    
+    - schema.prisma: 7 моделей, 3 enum'а (UserRole, MessageRole, TaskStatus).
+      PK — UUID через uuid_generate_v4(), DateTime — Timestamptz (Asia/Irkutsk).
+      Векторные поля (Document.embedding, KnowledgeBase.embedding) через
+      Unsupported("vector(1536)") — Prisma 6 не поддерживает pgvector нативно
+    - Конвенции: PascalCase модели, camelCase поля, snake_case в БД через @@map/@map
+    - Индексы: UNIQUE на users.email, B-tree на все FK
+    - ON DELETE RESTRICT на всех FK — защита от каскадного удаления юрданных
+    - JSONB для attachments (Message) и parameters (Template) —
+      валидация на уровне приложения через Zod
+    - Миграция: 20260417004848_init (7 таблиц, 3 enum'а, 3 расширения,
+      7 индексов, 6 FK)
+    
+    Co-Authored-By: backend-developer <backend-developer@agents.law-ai.local>
+
+[33mcommit 44b5b4112c09bb9924082efc36e0675f42ad3cc8[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 08:40:56 2026 +0800
+
+    [docker-deploy] feat: Dockerfile для frontend (Next.js standalone) и сервис в compose
+    
+    - frontend/Dockerfile: три стадии (deps → build → runtime) на node:20-alpine.
+      NEXT_PUBLIC_* передаются через ARG/ENV на этапе build (вшиваются в bundle).
+      Standalone output: server.js + минимальный node_modules (~120-150 МБ образ).
+      HOSTNAME=0.0.0.0 для корректной работы в Docker-сети.
+      Непривилегированный user node, HEALTHCHECK через wget
+    - frontend/.dockerignore: исключает node_modules, .next, .env, IDE-файлы
+      из build-контекста
+    - frontend/public/.gitkeep: гарантирует что COPY public/ не упадёт в Dockerfile
+    - docker-compose.yml: сервис frontend — build args для NEXT_PUBLIC_*,
+      environment для runtime (TZ, HOSTNAME, PORT),
+      depends_on backend (condition: service_healthy),
+      порт 127.0.0.1:3000:3000
+    
+    Co-Authored-By: docker-deploy <docker-deploy@agents.law-ai.local>
+
+[33mcommit d43d73208e385487a6b7e96f950cd830c4f8bfd7[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 08:37:20 2026 +0800
+
+    [frontend-ui-developer] feat: каркас frontend на Next.js 14 + Tailwind + Zustand
+    
+    Минимальный рабочий frontend: запускается в dev (npm run dev),
+    проходит typecheck, тёмный интерфейс с sidebar и заглушкой главной.
+    
+    - package.json: Next.js 14, React 18, Tailwind 3.4, Zustand 5,
+      Lucide React, TypeScript 5
+    - next.config.ts: output "standalone" для Docker
+    - tailwind.config.ts: кастомная тёмная палитра (surface-*, brand-*),
+      sidebar 240px
+    - app/layout.tsx: <html lang="ru">, Inter (latin+cyrillic), тёмная тема
+    - app/page.tsx: приветственный экран с описанием возможностей
+    - components/layout/Sidebar.tsx: логотип, "Новый диалог",
+      навигация (Диалоги/Шаблоны/Задачи/База знаний), заглушка "Юрист"
+    - components/ui/Button.tsx: переиспользуемая кнопка (3 варианта, 3 размера)
+    - lib/api.ts: fetch-обёртка (заготовка)
+    - stores/app.ts: Zustand store (sidebarOpen)
+    - package-lock.json: 391 пакет
+    
+    Проверки: npm install OK, typecheck OK.
+    
+    Co-Authored-By: frontend-ui-developer <frontend-ui-developer@agents.law-ai.local>
+
+[33mcommit 9e23b9ac63bc097cd9acac57dad497a0007cdc3c[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Fri Apr 17 08:17:56 2026 +0800
+
+    [docker-deploy] feat: Dockerfile для backend (multi-stage) и сервис в compose
+    
+    - backend/Dockerfile: три стадии (deps → build → runtime) на node:20-alpine.
+      Prisma-клиент генерируется на build и копируется в runtime без CLI
+      (~30 МБ экономии). Непривилегированный user node, HEALTHCHECK через
+      wget на /health, env через docker-compose environment (без --env-file)
+    - backend/.dockerignore: исключает node_modules, dist, .env, docs
+      из build-контекста (корневой .dockerignore не действует при context: ./backend)
+    - docker-compose.yml: сервис backend — build из ./backend,
+      depends_on postgres/redis/minio (condition: service_healthy),
+      healthcheck с динамическим портом $BACKEND_PORT,
+      все env из корневого .env, порт на 127.0.0.1
+    
+    Co-Authored-By: docker-deploy <docker-deploy@agents.law-ai.local>
+
+[33mcommit 29108a572091526e84044cdc7056365b01779443[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Thu Apr 16 17:00:36 2026 +0800
+
+    [backend-developer] feat: каркас backend на Fastify + TypeScript + Prisma
+    
+    Минимальный рабочий backend-скелет: запускается в dev (npm run dev),
+    проходит typecheck/lint, отдаёт GET /health.
+    
+    - package.json (ESM, Node >=20.6): Fastify 5 + fastify-type-provider-zod,
+      Zod 4, Prisma 6, Pino 9 + pino-pretty, TypeScript 6, tsx 4, ESLint 9
+    - tsconfig.json: strict, target es2022, moduleResolution "bundler",
+      noUncheckedIndexedAccess
+    - prisma/schema.prisma: datasource + generator с previewFeatures
+      postgresqlExtensions и расширениями vector, pg_trgm, uuidOssp.
+      Модели — отдельной задачей
+    - src/config/env.ts: Zod-схема всех переменных корневого .env; fail-fast
+      с человекочитаемым списком проблем
+    - src/lib/logger.ts: Pino-опции для Fastify, redact чувствительных полей
+      (authorization, cookie, password*, token*, JWT_SECRET, ANTHROPIC_API_KEY)
+    - src/server.ts: buildServer() — фабрика Fastify, удобна для тестов.
+      X-Request-Id (уважает входящий), error handler с маскировкой 5xx,
+      404 handler, Zod-компиляторы
+    - src/index.ts: bootstrap + graceful shutdown (SIGTERM/SIGINT, 10s)
+    - src/routes/health.ts: GET /health → {status, timestamp, uptime}.
+      Без проверок БД/Redis/MinIO — это Задача 5
+    - eslint.config.js (flat), .prettierrc.json, .gitignore (локальная страховка)
+    - README.md с командами и структурой
+    - package-lock.json: 220 зафиксированных пакетов
+    
+    Проверки: npm install OK, typecheck OK, lint OK, smoke-test /health → 200.
+    
+    Co-Authored-By: backend-developer <backend-developer@agents.law-ai.local>
+
+[33mcommit 2f055afa12e765044078c2f160aa196649c63b82[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Thu Apr 16 16:37:46 2026 +0800
+
+    [docker-deploy] chore: единая таймзона Asia/Irkutsk для контейнеров и БД
+    
+    - .env.example: новая секция "Общие" с переменной TZ=Asia/Irkutsk
+      и комментарием о важности единой таймзоны для юридического ПО
+      (сроки исковой давности, процессуальные дедлайны, аудит-логи).
+      Asia/Irkutsk = UTC+8, без перехода на летнее время
+    - docker-compose.yml: TZ: ${TZ} во всех четырёх сервисах
+      (postgres, redis, minio, minio-init); у redis создан блок environment
+    - docker/db/init.sql: ALTER DATABASE current_database()
+      SET timezone TO 'Asia/Irkutsk' в анонимном DO-блоке —
+      фиксирует TZ на уровне GUC базы независимо от env контейнера
+    
+    Co-Authored-By: docker-deploy <docker-deploy@agents.law-ai.local>
+
+[33mcommit 97c58fd049382e061bb7236218e0b9697488dfb7[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Thu Apr 16 16:29:25 2026 +0800
+
+    [docker-deploy] chore: docker-compose с инфраструктурой (Postgres+pgvector, Redis, MinIO)
+    
+    - docker-compose.yml с тремя сервисами: postgres (pgvector/pgvector:pg16),
+      redis (redis:7-alpine), minio (зафиксированный релиз 2024-10-13).
+      Сеть lawer-net, именованные volumes, healthcheck'и у всех;
+      порты наружу биндятся только на 127.0.0.1
+    - docker/db/init.sql — активация расширений vector, pg_trgm, uuid-ossp
+      при первичной инициализации кластера
+    - одноразовый minio-init (профиль init, идемпотентный) для создания
+      бакета ${MINIO_BUCKET_DOCUMENTS}
+    - .dockerignore — заготовка для будущих билдов backend/frontend
+    
+    Co-Authored-By: docker-deploy <docker-deploy@agents.law-ai.local>
+
+[33mcommit 7538d5cb2fd3a73bf4cf7ee79612ff5a72ecf0f4[m
+Author: vladim_ch <toxic.mure@gmail.com>
+Date:   Thu Apr 16 15:14:21 2026 +0800
+
+    chore: инициализация репозитория и структура монорепо
+    
+    - git-репозиторий на ветке main
+    - базовая структура: backend/, frontend/, mcp-servers/, docker/ (с .gitkeep)
+    - .gitignore для Node, Next.js, Docker и Python-стеков
+    - .env.example с переменными окружения согласно ТЗ
+      (Postgres+pgvector, Redis, MinIO, Claude API, JWT)
+    - README.md с описанием проекта, стеком, структурой и фазами
+    - конфиги 7 специализированных агентов Claude Code (.claude/agents/)
+      и каталоги под их персистентную память (.claude/agent-memory/)
+    
+    Co-Authored-By: Claude <noreply@anthropic.com>
